@@ -1,0 +1,48 @@
+[project]
+name = "dataforge-backend"
+version = "0.1.0"
+description = "DataForge backend API (FastAPI)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.20.0",
+    "asyncpg>=0.31.0",
+    "fastapi[standard]>=0.141.1",
+    "pydantic-settings>=2.15.0",
+    "python-dotenv>=1.2.3",
+    "redis>=8.1.0",
+    "slowapi>=0.1.10",
+    "sqlalchemy[asyncio]>=2.1.1",
+    "structlog>=26.1.0",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "mypy>=2.3.1",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.16.9",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.isort]
+# The local alembic/ migrations folder would otherwise make ruff treat the package as first-party.
+known-third-party = ["alembic"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["src"]
+testpaths = ["tests"]
