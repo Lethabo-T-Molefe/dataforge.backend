@@ -1,0 +1,168 @@
+# DataForge backend
+
+The API behind DataForge: governed analytics for everyday members and data scientists. It covers identity
+with MFA, roles and quotas, uploads and read-only connectors, PII detection and masking, quality profiling,
+guided cleaning recipes, the bronze/silver/gold medallion warehouse, a semantic layer of shared metrics,
+point-and-click analysis, an AI assistant that answers or refuses, SQL and notebooks in a sandbox, dashboards
+and embedding, monitors with root cause, explainable predictions with PDF and Excel export, an immutable
+audit trail, search, and Slack.
+
+Apache Superset (dashboards, Explore, SQL Lab) and JupyterLab (notebooks) run beside it. Both are themed
+as DataForge and governed by it (see [Superset and Jupyter](#superset-and-jupyter)).
+
+## Architecture
+
+FastAPI (async) in a Clean Architecture layout:
+
+```
+src/dataforge_backend/
+  core/            settings, database engine, security (argon2id, JWT, TOTP), encryption, errors, logging
+  domain/          framework-free rules: values, PII, profiling, insights, cleaning operations and recipes,
+                   analysis engine and SQL, SQL guard, semantic layer, monitoring, prediction, assistant planner
+  application/     use cases: identity, datasets, cleaning, analysis, workbench, assistant, metrics,
+                   dashboards, monitors, predictions, connectors, admin, search, integrations, Slack, audit
+  infrastructure/  PostgreSQL models, warehouse (COPY), sandbox, storage, email, Claude, Superset, Jupyter,
+                   Slack, external databases
+  presentation/    HTTP: v1 routers, request/response shapes (camelCase), auth dependencies, errors
+  seed.py, cli.py  demo data and operational commands
+integrations/
+  superset/        Superset 6.1 config, DataForge theme, single sign-on, bootstrap (own virtual environment)
+  jupyter/         JupyterLab 4.6 config, theme, single sign-on, per-member access, `dataforge` client library
+```
+
+PostgreSQL holds the metadata in schema `app` and member data in schemas `bronze` (raw text, immutable per
+version), `silver` (cleaned, typed, masked) and `gold` (analytics-ready).
+
+### Governance, built in
+
+- **Journey.** Raw data lands in bronze and can never be queried. Cleaning writes silver, pending approval.
+  Only a steward's approval grants the sandbox role `SELECT` on the table; rejection and erasure revoke it.
+- **Sandbox.** Member and generated SQL is parsed and validated (single read-only SELECT, allow-listed tables
+  and functions, masked columns refused), regenerated from the validated syntax tree, row policies applied as
+  filtered subqueries, then run in a `READ ONLY` transaction under `SET LOCAL ROLE dataforge_sandbox` with a
+  statement timeout and a row cap. Every run is recorded as a sandbox session and counts toward quota.
+- **Personal information** is detected by value and by column name, masked in every preview and in silver,
+  blocked in SQL, and never reaches gold. Classification is raised automatically when PII is present.
+- **Semantic layer.** A metric is defined once over column names (additive, count, distinct, or ratio) and
+  applies to every approved dataset with those columns. The assistant, analysis, dashboards, monitors,
+  predictions and Superset all compute it the same way.
+- **Assistant.** Claude (when `ANTHROPIC_API_KEY` is set) or the rule-based planner proposes a *plan* (dataset,
+  measure, method, grouping, filters, period) constrained by a JSON schema whose enums hold only the member's
+  permitted fields. The plan is validated again, the analysis engine composes the SQL, and the sandbox runs it
+  under the member's role. Personal questions, predictions, prompt injection and ungrounded questions are
+  refused and recorded. The model never writes SQL and never sees data rows. Requests use `claude-opus-5`
+  with server-side refusal fallbacks enabled (`fallbacks: "default"`); remove that parameter in
+  `infrastructure/llm.py` if you do not want declined requests retried on another model.
+- **Audit.** `app.audit_events` is append-only: a trigger rejects `UPDATE`, `DELETE` and `TRUNCATE` for everyone.
+- **Erasure.** Erasing a dataset drops every layer's tables and landed files and returns a hashed receipt.
+
+## Running locally
+
+Requirements: Python 3.12 with [uv](https://docs.astral.sh/uv/), PostgreSQL 14+ (tested on 18).
+
+```bash
+uv sync                               # creates .venv with runtime and dev dependencies
+cp .env.example .env                  # then set DATABASE_URL and the secrets
+uv run dataforge migrate              # schemas, tables, sandbox role, audit trigger
+uv run dataforge seed-demo            # optional: demo organisation through the real pipeline (~20 s)
+uv run dataforge serve --reload       # http://127.0.0.1:8000, docs at /docs when DEBUG=true
+```
+
+The database login needs `CREATEROLE` the first time migrations run, because they create the
+`dataforge_sandbox` role and grant it to the application's own login.
+
+Demo members (with `DEMO_MODE=true`) sign in as `thandi@dataforge.local` (analyst), `sipho@` (practitioner),
+`naledi@` (steward), `lerato@` (executive), `amina@` (admin), `johan@` (auditor) and `zola@` (curator), using
+`DEMO_PASSWORD`, or with one click through `POST /api/v1/auth/demo {"role": "analyst"}`. Turn demo mode off
+in production (the settings refuse to start otherwise).
+
+### Commands
+
+| Command | What it does |
+| --- | --- |
+| `dataforge migrate` | Apply migrations |
+| `dataforge seed-demo` | Create demo members, datasets, metrics, dashboards, monitors, a model version |
+| `dataforge create-admin` | Create or promote an administrator |
+| `dataforge evaluate-monitors` | Evaluate due monitors once (for cron when `MONITOR_INTERVAL_SECONDS=0`) |
+| `dataforge superset-sync` | Create the read-only BI login and sync datasets, metrics and row policies to Superset |
+| `dataforge serve` | Run the API |
+
+## Superset and Jupyter
+
+Each has its own virtual environment under `integrations/`, so their dependencies never mix with the API's.
+
+**Superset** (Python 3.11):
+
+```bash
+cd integrations/superset
+uv venv --python 3.11 .venv
+uv pip install --python .venv/Scripts/python.exe -r requirements.txt -c constraints-6.1.0.txt   # .venv/bin/python on Linux/macOS
+cp .env.example .env                       # SSO_SHARED_SECRET and SUPERSET_ADMIN_PASSWORD must match the API's .env
+.venv/Scripts/python bootstrap.py          # migrations, service account, roles (idempotent)
+.venv/Scripts/python run.py                # http://localhost:8088
+cd ../.. && uv run dataforge superset-sync # register the warehouse, approved datasets, metrics and row policies
+```
+
+- Members open Superset from DataForge (`POST /api/v1/integrations/superset/sign-in`): a two-minute, single-use
+  token signed with `SSO_SHARED_SECRET` signs them in with roles mapped from their DataForge role
+  (auditors are refused). There is no second password.
+- Superset reads the warehouse through `dataforge_bi`, a read-only login that inherits the sandbox role's grants:
+  approved silver and gold tables only, `default_transaction_read_only`, a statement timeout. Only
+  organisation-wide datasets are registered, each with the semantic layer's metrics; row policies become
+  Superset row-level security rules for `df_<role>` roles.
+- Embedded dashboards use guest tokens that carry the viewer's row policies
+  (`POST /api/v1/integrations/superset/dashboards/{id}/guest-token`).
+- The UI uses the DataForge design system (`dataforge_superset/theme.py`): ivory surfaces, charcoal controls,
+  vermilion as a signal, Instrument Sans and Fraunces, pill controls, DataForge chart colours and logo.
+  Dark mode and theme swapping are off, matching DataForge.
+
+**Jupyter** (Python 3.12):
+
+```bash
+cd integrations/jupyter
+uv venv --python 3.12 .venv
+uv pip install --python .venv/Scripts/python.exe -r requirements.txt
+cp .env.example .env                       # SSO_SHARED_SECRET and JUPYTER_API_TOKEN must match the API's .env
+.venv/Scripts/python run.py                # http://localhost:8888/jupyter
+```
+
+- Members with code roles open JupyterLab from DataForge (`POST /api/v1/integrations/jupyter/sign-in`).
+  They work in `members/<their id>/` and `shared/`; other members' folders and terminals are refused.
+- Kernels hold no database credentials. They start with the member's own notebook token and query through
+  the API with the `dataforge` library, so permissions, masking and row policies apply:
+  `import dataforge as df; df.sql("SELECT ...")`, or `%load_ext dataforge` and a `%%sql` cell.
+- Any DataForge notebook or generated SQL can be opened in Jupyter
+  (`POST /api/v1/integrations/jupyter/notebooks/{id}`, `POST /api/v1/integrations/jupyter/sql`).
+- The UI uses the DataForge theme (`dataforge_jupyter/custom/custom.css`, settings overrides, logo, title).
+
+## Tests and checks
+
+```bash
+uv run pytest            # unit tests, plus integration tests on a fresh <database>_test database
+uv run ruff check . && uv run ruff format --check .
+uv run mypy src          # strict
+```
+
+Integration tests drop and rebuild the `_test` database next to `DATABASE_URL` (override with
+`DATAFORGE_TEST_DATABASE_URL`), run the migrations, seed through the real pipeline and exercise the API:
+registration, MFA, refresh-token reuse detection, lockout, the full upload → clean → approve → analyse path,
+reproducible reruns, masking, row policies, dashboards and embedding, alerts and root cause, predictions and
+exports, notebooks, search, erasure and the append-only audit trail.
+
+## Docker
+
+`docker-compose.yml` runs PostgreSQL, migrations, the API, Superset and Jupyter together. Copy `.env.example`
+to `.env`, set the secrets named in the compose file, then `docker compose up --build`.
+
+## Limits to know about
+
+- **Sandbox isolation.** SQL runs under a least-privilege database role with caps; cleaning and scoring run in
+  worker threads with wall-clock caps. Container isolation per session (gVisor) is an infrastructure concern and
+  is not part of this service.
+- **Jupyter isolation.** One Jupyter server serves all members. Folders, kernels and data access are separated,
+  but kernels share the server's operating-system user. For hard isolation between members, run JupyterHub
+  with a container spawner and the same `dataforge` library.
+- **Demo connectors** (`Service desk`, `Analytics warehouse`) point at hosts that do not exist; their datasets are
+  seeded directly. Real connectors are tested live when created or approved.
+- **Docker images** are defined and the compose file validates, but the images were not built in this
+  environment (the Docker daemon was not running).

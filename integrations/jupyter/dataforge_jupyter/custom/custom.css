@@ -1,0 +1,258 @@
+/*
+ * DataForge design system for JupyterLab.
+ * Core palette: Ivory #F6F7EB, Vermilion #E94F37, Charcoal #393E41.
+ * Rule: controls are pills, content is square. Vermilion is a signal only.
+ * Values are the frontend's oklch tokens (src/assets/styles.css) converted to sRGB.
+ */
+@import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,200..500&family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
+
+:root {
+  --df-ivory-50: #fcfcf7;
+  --df-ivory-100: #f5f5eb;
+  --df-ivory-200: #ebebd9;
+  --df-ivory-300: #dcddc2;
+  --df-ivory-400: #c5c5a5;
+  --df-vermilion-50: #fbece9;
+  --df-vermilion-300: #f48d7d;
+  --df-vermilion-500: #e95036;
+  --df-vermilion-700: #af3a23;
+  --df-vermilion-800: #852917;
+  --df-charcoal-300: #919699;
+  --df-charcoal-400: #6b7175;
+  --df-charcoal-500: #52585b;
+  --df-charcoal-700: #373d40;
+  --df-charcoal-800: #292e30;
+  --df-charcoal-900: #1d2023;
+  --df-success: #416548;
+  --df-warning: #82641b;
+  --df-border: rgba(55, 61, 64, 0.14);
+  --df-line-strong: rgba(55, 61, 64, 0.4);
+
+  /* Type */
+  --jp-ui-font-family: "Instrument Sans", system-ui, sans-serif;
+  --jp-content-font-family: "Instrument Sans", system-ui, sans-serif;
+  --jp-code-font-family: "JetBrains Mono", ui-monospace, monospace;
+  --jp-code-font-family-default: "JetBrains Mono", ui-monospace, monospace;
+  --jp-ui-font-size1: 13px;
+  --jp-content-font-size1: 14px;
+  --jp-code-font-size: 13px;
+  --jp-content-line-height: 1.6;
+  --jp-content-heading-font-weight: 400;
+
+  /* Surfaces */
+  --jp-layout-color0: var(--df-ivory-50);
+  --jp-layout-color1: var(--df-ivory-50);
+  --jp-layout-color2: var(--df-ivory-200);
+  --jp-layout-color3: var(--df-ivory-300);
+  --jp-layout-color4: var(--df-ivory-400);
+  --jp-inverse-layout-color0: var(--df-charcoal-900);
+  --jp-inverse-layout-color1: var(--df-charcoal-700);
+  --jp-inverse-layout-color2: var(--df-charcoal-500);
+  --jp-inverse-layout-color3: var(--df-charcoal-400);
+  --jp-inverse-layout-color4: var(--df-charcoal-300);
+  --jp-toolbar-background: var(--df-ivory-50);
+  --jp-toolbar-border-color: var(--df-border);
+  --jp-toolbar-box-shadow: none;
+  --jp-input-background: var(--df-ivory-50);
+  --jp-input-active-background: var(--df-ivory-50);
+  --jp-input-hover-background: var(--df-ivory-100);
+  --jp-input-border-color: var(--df-line-strong);
+  --jp-input-active-border-color: var(--df-charcoal-700);
+  --jp-input-active-box-shadow-color: rgba(55, 61, 64, 0.2);
+
+  /* Text */
+  --jp-ui-font-color0: var(--df-charcoal-900);
+  --jp-ui-font-color1: var(--df-charcoal-700);
+  --jp-ui-font-color2: var(--df-charcoal-500);
+  --jp-ui-font-color3: var(--df-charcoal-400);
+  --jp-ui-inverse-font-color0: var(--df-ivory-50);
+  --jp-ui-inverse-font-color1: var(--df-ivory-100);
+  --jp-ui-inverse-font-color2: var(--df-ivory-200);
+  --jp-ui-inverse-font-color3: var(--df-ivory-300);
+  --jp-content-font-color0: var(--df-charcoal-900);
+  --jp-content-font-color1: var(--df-charcoal-700);
+  --jp-content-font-color2: var(--df-charcoal-500);
+  --jp-content-font-color3: var(--df-charcoal-400);
+  --jp-content-link-color: var(--df-vermilion-700);
+  --jp-content-link-hover-color: var(--df-vermilion-500);
+
+  /* Lines */
+  --jp-border-width: 1px;
+  --jp-border-color0: var(--df-line-strong);
+  --jp-border-color1: var(--df-border);
+  --jp-border-color2: var(--df-border);
+  --jp-border-color3: rgba(55, 61, 64, 0.08);
+  --jp-border-radius: 6px;
+
+  /* Brand: charcoal controls, vermilion as the signal */
+  --jp-brand-color0: var(--df-charcoal-900);
+  --jp-brand-color1: var(--df-charcoal-700);
+  --jp-brand-color2: var(--df-charcoal-400);
+  --jp-brand-color3: var(--df-charcoal-300);
+  --jp-brand-color4: var(--df-ivory-300);
+  --jp-accent-color0: var(--df-vermilion-800);
+  --jp-accent-color1: var(--df-vermilion-500);
+  --jp-accent-color2: var(--df-vermilion-300);
+  --jp-accent-color3: var(--df-vermilion-50);
+  --jp-warn-color0: var(--df-warning);
+  --jp-warn-color1: var(--df-warning);
+  --jp-warn-color2: #b89a55;
+  --jp-warn-color3: #f3ecd9;
+  --jp-error-color0: var(--df-vermilion-800);
+  --jp-error-color1: var(--df-vermilion-700);
+  --jp-error-color2: var(--df-vermilion-300);
+  --jp-error-color3: var(--df-vermilion-50);
+  --jp-success-color0: var(--df-success);
+  --jp-success-color1: var(--df-success);
+  --jp-success-color2: #7e9a83;
+  --jp-success-color3: #e3ebe4;
+  --jp-info-color0: var(--df-charcoal-700);
+  --jp-info-color1: var(--df-charcoal-500);
+  --jp-info-color2: var(--df-charcoal-300);
+  --jp-info-color3: var(--df-ivory-200);
+
+  /* Notebook */
+  --jp-cell-editor-background: var(--df-ivory-100);
+  --jp-cell-editor-border-color: var(--df-border);
+  --jp-cell-editor-active-background: var(--df-ivory-50);
+  --jp-cell-editor-active-border-color: var(--df-charcoal-700);
+  --jp-cell-prompt-font-family: "JetBrains Mono", ui-monospace, monospace;
+  --jp-cell-inprompt-font-color: var(--df-charcoal-400);
+  --jp-cell-outprompt-font-color: var(--df-vermilion-700);
+  --jp-notebook-select-background: var(--df-ivory-200);
+  --jp-notebook-multiselected-color: var(--df-ivory-300);
+  --jp-rendermime-error-background: var(--df-vermilion-50);
+  --jp-rendermime-table-row-background: var(--df-ivory-100);
+  --jp-rendermime-table-row-hover-background: var(--df-ivory-200);
+  --jp-dialog-background: rgba(29, 32, 35, 0.3);
+  --jp-shadow-base-lightness: 20;
+
+  /* Code: charcoal ink, vermilion for keywords, muted greens and ochres */
+  --jp-mirror-editor-keyword-color: var(--df-vermilion-700);
+  --jp-mirror-editor-atom-color: var(--df-charcoal-900);
+  --jp-mirror-editor-number-color: var(--df-success);
+  --jp-mirror-editor-def-color: var(--df-charcoal-900);
+  --jp-mirror-editor-variable-color: var(--df-charcoal-700);
+  --jp-mirror-editor-variable-2-color: var(--df-charcoal-800);
+  --jp-mirror-editor-variable-3-color: var(--df-charcoal-800);
+  --jp-mirror-editor-punctuation-color: var(--df-charcoal-500);
+  --jp-mirror-editor-property-color: var(--df-charcoal-800);
+  --jp-mirror-editor-operator-color: var(--df-vermilion-700);
+  --jp-mirror-editor-comment-color: var(--df-charcoal-400);
+  --jp-mirror-editor-string-color: var(--df-warning);
+  --jp-mirror-editor-string-2-color: var(--df-warning);
+  --jp-mirror-editor-meta-color: var(--df-vermilion-700);
+  --jp-mirror-editor-builtin-color: var(--df-success);
+  --jp-mirror-editor-tag-color: var(--df-vermilion-700);
+  --jp-mirror-editor-attribute-color: var(--df-charcoal-700);
+  --jp-mirror-editor-header-color: var(--df-charcoal-900);
+  --jp-mirror-editor-link-color: var(--df-vermilion-700);
+  --jp-mirror-editor-error-color: var(--df-vermilion-800);
+}
+
+body {
+  background: var(--df-ivory-100);
+  font-feature-settings: "ss01";
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Brand mark in place of the Jupyter logo */
+#jp-MainLogo {
+  width: 28px;
+  margin: 0 6px 0 10px;
+  background: url("/jupyter/custom/logo-submark.png") center / contain no-repeat;
+}
+#jp-MainLogo svg {
+  display: none;
+}
+
+/* Top bar and side bars sit on the alternate ivory, like the DataForge sidebar */
+#jp-top-panel,
+#jp-menu-panel,
+.lm-MenuBar,
+.jp-SideBar.lm-TabBar,
+#jp-left-stack,
+#jp-right-stack {
+  background: var(--df-ivory-200);
+}
+#jp-top-panel,
+.lm-MenuBar {
+  border-bottom: 1px solid var(--df-border);
+  box-shadow: none;
+}
+.jp-SideBar .lm-TabBar-tab.lm-mod-current {
+  background: var(--df-ivory-300);
+}
+.jp-SideBar.lm-TabBar .lm-TabBar-tab.lm-mod-current::before {
+  background: var(--df-vermilion-500);
+}
+
+/* Headings use the display serif */
+.jp-RenderedHTMLCommon h1,
+.jp-RenderedHTMLCommon h2,
+.jp-RenderedHTMLCommon h3,
+.jp-Launcher-sectionTitle,
+.jp-Dialog-header {
+  font-family: "Fraunces", Georgia, serif;
+  font-weight: 350;
+  letter-spacing: -0.015em;
+}
+
+/* Controls are pills */
+.jp-Button,
+button.jp-mod-styled,
+.jp-ToolbarButtonComponent,
+.jp-Dialog-button,
+.jp-mod-styled select,
+.jp-InputGroup input,
+.jp-FileBrowser-filterBox input {
+  border-radius: 999px !important;
+}
+button.jp-mod-accept,
+.jp-Dialog-button.jp-mod-accept {
+  background: var(--df-charcoal-700) !important;
+  color: var(--df-ivory-100) !important;
+}
+button.jp-mod-warn,
+.jp-Dialog-button.jp-mod-warn {
+  background: var(--df-vermilion-800) !important;
+  color: var(--df-ivory-100) !important;
+}
+
+/* Content is square: cells and panels keep a small radius */
+.jp-Cell .jp-InputArea-editor,
+.jp-Launcher-card,
+.jp-Dialog-content {
+  border-radius: 6px;
+}
+.jp-Launcher-card {
+  background: var(--df-ivory-50);
+  border: 1px solid var(--df-border);
+  box-shadow: none;
+}
+.jp-Launcher-card:hover {
+  border-color: var(--df-charcoal-700);
+  box-shadow: none;
+}
+.jp-Notebook .jp-Cell.jp-mod-selected .jp-Collapser {
+  background: var(--df-vermilion-500);
+}
+
+/* Tables read like DataForge result tables */
+.jp-RenderedHTMLCommon table {
+  font-variant-numeric: tabular-nums lining-nums;
+  border-collapse: collapse;
+}
+.jp-RenderedHTMLCommon thead {
+  border-bottom: 1px solid var(--df-line-strong);
+}
+
+:focus-visible {
+  outline: 2px solid var(--df-charcoal-700);
+  outline-offset: 2px;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--df-line-strong) transparent;
+}

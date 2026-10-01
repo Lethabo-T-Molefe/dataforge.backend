@@ -7,7 +7,8 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from dataforge_backend.core.config import settings
-from dataforge_backend.core.database import Base
+from dataforge_backend.core.database import APP_SCHEMA, Base
+from dataforge_backend.infrastructure.db import models  # noqa: F401  (registers the tables)
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -51,14 +52,33 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        include_schemas=True,
+        version_table_schema=APP_SCHEMA,
+        include_name=_include_name,
     )
 
     with context.begin_transaction():
         context.run_migrations()
 
 
+def _include_name(name: str | None, type_: str, parent_names: object) -> bool:
+    """Only the app schema is managed by migrations; bronze, silver and gold hold member data."""
+    if type_ == "schema":
+        return name == APP_SCHEMA
+    return True
+
+
 def do_run_migrations(connection: Connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata)
+    # The version table lives in the app schema, which must exist before Alembic writes to it.
+    connection.exec_driver_sql(f"CREATE SCHEMA IF NOT EXISTS {APP_SCHEMA}")
+    connection.commit()
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        include_schemas=True,
+        version_table_schema=APP_SCHEMA,
+        include_name=_include_name,
+    )
 
     with context.begin_transaction():
         context.run_migrations()

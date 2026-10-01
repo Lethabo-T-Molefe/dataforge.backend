@@ -1,0 +1,7 @@
+.venv
+.env
+workspace
+config
+superset_home
+**/__pycache__
+*.log

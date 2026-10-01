@@ -1,0 +1,17 @@
+# JupyterLab environment for DataForge notebooks (Python 3.12).
+#   uv venv --python 3.12 .venv
+#   uv pip install --python .venv/Scripts/python.exe -r requirements.txt
+jupyterlab==4.6.4
+ipykernel>=6.29
+pyjwt>=2.10
+httpx>=0.28
+# Libraries notebooks use for analysis. Data arrives through the DataForge API, not a database driver.
+pandas>=2.3
+numpy>=2.3
+scipy>=1.16
+scikit-learn>=1.7
+statsmodels>=0.14
+matplotlib>=3.10
+seaborn>=0.13
+plotly>=6.0
+openpyxl>=3.1

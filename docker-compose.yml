@@ -1,0 +1,76 @@
+# DataForge backend, Superset and Jupyter on one host, for a pilot or local end-to-end testing.
+#   cp .env.example .env      and fill in the secrets (the same SSO_SHARED_SECRET everywhere)
+#   docker compose up --build
+#   docker compose exec api dataforge seed-demo     (optional demo organisation)
+# The frontend is served separately (npm run dev / build) and talks to http://localhost:8000.
+
+x-secrets: &secrets
+  SSO_SHARED_SECRET: ${SSO_SHARED_SECRET:?set SSO_SHARED_SECRET}
+  DATAFORGE_JWT_ISSUER: dataforge
+  DATAFORGE_FRONTEND_ORIGINS: ${DATAFORGE_FRONTEND_ORIGINS:-http://localhost:8080,http://localhost:5173}
+
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: dataforge
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: dataforge
+    volumes:
+      - postgres:/var/lib/postgresql
+      - ./docker/postgres-init.sql:/docker-entrypoint-initdb.d/10-superset.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dataforge -d dataforge"]
+      interval: 5s
+      retries: 20
+
+  migrate:
+    build: .
+    command: ["dataforge", "migrate"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://dataforge:${POSTGRES_PASSWORD}@postgres:5432/dataforge
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  api:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://dataforge:${POSTGRES_PASSWORD}@postgres:5432/dataforge
+      SUPERSET_URL: http://superset:8088
+      SUPERSET_PUBLIC_URL: http://localhost:8088
+      JUPYTER_URL: http://jupyter:8888/jupyter
+      JUPYTER_PUBLIC_URL: http://localhost:8888/jupyter
+    ports: ["8000:8000"]
+    volumes: ["landing:/app/var/landing"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  superset:
+    build: ./integrations/superset
+    environment:
+      <<: *secrets
+      SUPERSET_METADATA_URL: postgresql+psycopg2://dataforge:${POSTGRES_PASSWORD}@postgres:5432/superset
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:?set SUPERSET_SECRET_KEY}
+      SUPERSET_GUEST_TOKEN_SECRET: ${SUPERSET_GUEST_TOKEN_SECRET:?set SUPERSET_GUEST_TOKEN_SECRET}
+      SUPERSET_ADMIN_USER: ${SUPERSET_ADMIN_USER:-dataforge-service}
+      SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:?set SUPERSET_ADMIN_PASSWORD}
+    ports: ["8088:8088"]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  jupyter:
+    build: ./integrations/jupyter
+    environment:
+      <<: *secrets
+      JUPYTER_API_TOKEN: ${JUPYTER_API_TOKEN:?set JUPYTER_API_TOKEN}
+      DATAFORGE_API_URL: http://api:8000
+    ports: ["8888:8888"]
+    volumes: ["notebooks:/workspace"]
+    depends_on: [api]
+
+volumes:
+  postgres:
+  landing:
+  notebooks:

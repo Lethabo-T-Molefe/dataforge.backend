@@ -1,0 +1,9 @@
+# Superset environment for DataForge (Python 3.11).
+#   uv venv --python 3.11 .venv
+#   uv pip install --python .venv/Scripts/python.exe -r requirements.txt
+apache-superset==6.1.0
+psycopg2-binary>=2.9.10
+# Imported by the superset CLI but not declared by the 6.1.0 package.
+rich
+# Install with Superset's lock as constraints:
+#   uv pip install --python .venv/Scripts/python.exe -r requirements.txt -c constraints-6.1.0.txt

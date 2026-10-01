@@ -1,0 +1,59 @@
+"""Outgoing email. Without SMTP settings, messages are written to the log (development only)."""
+
+import asyncio
+import smtplib
+from email.message import EmailMessage
+
+from ..core.config import settings
+from ..core.logging import get_logger
+
+log = get_logger(__name__)
+
+# Tests replace this to capture messages.
+sent: list[EmailMessage] = []
+
+
+def _send_sync(message: EmailMessage) -> None:
+    assert settings.SMTP_HOST
+    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=20) as client:
+        if settings.SMTP_STARTTLS:
+            client.starttls()
+        if settings.SMTP_USER and settings.SMTP_PASSWORD:
+            client.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+        client.send_message(message)
+
+
+async def send_email(to: str, subject: str, body: str) -> None:
+    message = EmailMessage()
+    message["From"] = settings.SMTP_FROM
+    message["To"] = to
+    message["Subject"] = subject
+    message.set_content(body)
+    sent.append(message)
+    del sent[:-50]
+    if not settings.SMTP_HOST:
+        if settings.ENVIRONMENT == "production":
+            log.error("email_not_sent_no_smtp", to=to, subject=subject)
+        else:
+            log.info("email_outbox", to=to, subject=subject, body=body)
+        return
+    await asyncio.to_thread(_send_sync, message)
+
+
+async def send_verification(to: str, name: str, token: str) -> None:
+    link = f"{settings.FRONTEND_URL}/verify?token={token}"
+    await send_email(
+        to,
+        "Verify your DataForge email",
+        f"Hello {name},\n\nConfirm your email address to start analysing data:\n{link}\n\n"
+        f"The link expires in {settings.EMAIL_TOKEN_HOURS} hours. If you did not register, ignore this email.\n",
+    )
+
+
+async def send_password_reset(to: str, name: str, token: str) -> None:
+    link = f"{settings.FRONTEND_URL}/reset-password?token={token}"
+    await send_email(
+        to,
+        "Reset your DataForge password",
+        f"Hello {name},\n\nChoose a new password here:\n{link}\n\nIf you did not ask for this, ignore this email.\n",
+    )

@@ -1,0 +1,7 @@
+.venv/
+.env
+workspace/
+__pycache__/
+superset_home/
+*.log
+jupyter/config/
