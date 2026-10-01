@@ -108,7 +108,12 @@ def dataforge_theme(static_prefix: str = "/dataforge-static") -> dict:
             "transitionTiming": 0.2,
         },
         "components": {
-            "Button": {"borderRadius": 999, "borderRadiusLG": 999, "borderRadiusSM": 999, "primaryShadow": "none"},
+            "Button": {
+                "borderRadius": 999,
+                "borderRadiusLG": 999,
+                "borderRadiusSM": 999,
+                "primaryShadow": "none",
+            },
             "Input": {"borderRadius": 999},
             "Select": {"borderRadius": 999},
             "Tag": {"borderRadiusSM": 999},

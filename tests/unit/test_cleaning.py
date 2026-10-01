@@ -54,20 +54,29 @@ def test_every_method_has_defaults_code_and_a_working_preview(raw: pd.DataFrame)
 
 def test_formats_become_iso_dates_and_numbers(raw: pd.DataFrame) -> None:
     outcome = run_operation(
-        "standardise_formats", raw, {"dates": ["enrolled_on"], "numbers": ["fee_paid"], "day_first": True}, _ctx(raw)
+        "standardise_formats",
+        raw,
+        {"dates": ["enrolled_on"], "numbers": ["fee_paid"], "day_first": True},
+        _ctx(raw),
     )
     typed, types = type_for_silver(outcome.frame)
     assert types["enrolled_on"] == "date"
     assert types["fee_paid"] in ("integer", "numeric")
-    assert {v for v in typed["fee_paid"] if v is not None} <= {1250, 1400, 1250.0, 1400.0}
+    assert {v for v in typed["fee_paid"] if v is not None} <= {1250, 1400}
 
 
 def test_recipe_is_reproducible_and_bronze_is_untouched(raw: pd.DataFrame) -> None:
     before = raw.copy()
     ctx = _ctx(raw)
     steps = [
-        RecipeStepSpec("format-date-number", {"dates": ["enrolled_on"], "numbers": ["fee_paid"], "day_first": True}, "accepted"),
-        RecipeStepSpec("cat-map", {"column": "region", "mapping": {"gauteng": "Gauteng", "GP": "Gauteng"}}, "accepted"),
+        RecipeStepSpec(
+            "format-date-number",
+            {"dates": ["enrolled_on"], "numbers": ["fee_paid"], "day_first": True},
+            "accepted",
+        ),
+        RecipeStepSpec(
+            "cat-map", {"column": "region", "mapping": {"gauteng": "Gauteng", "GP": "Gauteng"}}, "accepted"
+        ),
         RecipeStepSpec("dup-keep-first", {"subset": ["learner_id"], "keep": "first"}, "accepted"),
         RecipeStepSpec("missing-column-drop", {"threshold": 0.5}, "skipped"),
     ]

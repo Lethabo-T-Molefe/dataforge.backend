@@ -47,7 +47,9 @@ class Member:
 MEMBERS: dict[str, Member] = {}
 KERNEL_OWNERS: dict[str, str] = {}
 _USED_JTIS: dict[str, float] = {}
-current_username: contextvars.ContextVar[str | None] = contextvars.ContextVar("dataforge_username", default=None)
+current_username: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "dataforge_username", default=None
+)
 
 
 def _initials(name: str) -> str:
@@ -105,7 +107,9 @@ class DataForgeIdentityProvider(IdentityProvider):  # type: ignore[misc]
         service_token = os.environ.get("JUPYTER_API_TOKEN", "")
         header = handler.request.headers.get("Authorization", "")
         if service_token and header == f"token {service_token}":
-            return self._set(User(username=SERVICE_USER, name="DataForge", display_name="DataForge", initials="DF"))
+            return self._set(
+                User(username=SERVICE_USER, name="DataForge", display_name="DataForge", initials="DF")
+            )
         return None
 
     def get_user_cookie(self, handler: Any) -> User | None:
@@ -116,7 +120,14 @@ class DataForgeIdentityProvider(IdentityProvider):  # type: ignore[misc]
         # After a server restart, or when the notebook token has expired, sign in from DataForge again.
         if member is None or member.expires_at < time.time():
             return None
-        return self._set(User(username=member.username, name=member.name, display_name=member.name, initials=_initials(member.name)))
+        return self._set(
+            User(
+                username=member.username,
+                name=member.name,
+                display_name=member.name,
+                initials=_initials(member.name),
+            )
+        )
 
     def _set(self, user: User) -> User:
         current_username.set(user.username)
@@ -146,7 +157,11 @@ def _api_path(handler: Any) -> str | None:
             if prefix == "/nbconvert/":
                 rest = rest.partition("/")[2]
             return posixpath.normpath(rest.split("/checkpoints")[0].strip("/")) if rest.strip("/") else ""
-    if path.startswith("/api/sessions") and handler.request.method in ("POST", "PATCH") and handler.request.body:
+    if (
+        path.startswith("/api/sessions")
+        and handler.request.method in ("POST", "PATCH")
+        and handler.request.body
+    ):
         import json
 
         try:
@@ -203,10 +218,24 @@ class DataForgeAuthorizer(Authorizer):  # type: ignore[misc]
 class MemberContentsManager(AsyncLargeFileManager):  # type: ignore[misc]
     """Lists only the current member's folder under members/."""
 
-    async def get(self, path: str, content: bool = True, type: str | None = None, format: str | None = None, require_hash: bool = False) -> dict[str, Any]:  # noqa: A002
-        model: dict[str, Any] = await super().get(path, content=content, type=type, format=format, require_hash=require_hash)
+    async def get(
+        self,
+        path: str,
+        content: bool = True,
+        type: str | None = None,
+        format: str | None = None,
+        require_hash: bool = False,
+    ) -> dict[str, Any]:  # noqa: A002
+        model: dict[str, Any] = await super().get(
+            path, content=content, type=type, format=format, require_hash=require_hash
+        )
         username = current_username.get()
-        if username and username != SERVICE_USER and path.strip("/") == MEMBERS_DIR and isinstance(model.get("content"), list):
+        if (
+            username
+            and username != SERVICE_USER
+            and path.strip("/") == MEMBERS_DIR
+            and isinstance(model.get("content"), list)
+        ):
             model["content"] = [item for item in model["content"] if item.get("name") == username]
         return model
 
@@ -214,7 +243,9 @@ class MemberContentsManager(AsyncLargeFileManager):  # type: ignore[misc]
 class MemberKernelManager(AsyncMappingKernelManager):  # type: ignore[misc]
     """Starts each kernel with its member's DataForge notebook token and without the server's secrets."""
 
-    async def _async_start_kernel(self, *, kernel_id: str | None = None, path: str | None = None, **kwargs: Any) -> str:
+    async def _async_start_kernel(
+        self, *, kernel_id: str | None = None, path: str | None = None, **kwargs: Any
+    ) -> str:
         username = current_username.get()
         member = MEMBERS.get(username or "")
         if kernel_id is None or kernel_id not in self:

@@ -28,8 +28,9 @@ from .runtime import sandbox
 
 
 async def catalogue_for(session: AsyncSession, actor: Actor) -> dict[str, Any]:
-    actor.require(Permission.ANALYSE)
-    datasets = await catalogue.analysis_catalogue(session, actor)
+    # This lists what a member may analyse. For a role that does not analyse (an auditor) that is nothing,
+    # which is an answer rather than an error. Running an analysis is still refused for those roles.
+    datasets = await catalogue.analysis_catalogue(session, actor) if actor.can(Permission.ANALYSE) else []
     return {
         "methods": ANALYSIS_METHODS,
         "modes": ANALYSIS_MODES,

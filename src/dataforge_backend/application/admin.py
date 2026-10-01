@@ -204,7 +204,7 @@ async def set_policy(
         f"{ROLE_LABELS[Role(role)]}: {cleaned}",
     )
     await session.commit()
-    await sync_superset_later(dataset.id)
+    sync_superset_later(dataset.id)
     return {
         "id": existing.id,
         "datasetId": dataset_id,
@@ -224,4 +224,4 @@ async def delete_policy(session: AsyncSession, actor: Actor, policy_id: str) -> 
         session, actor, "Removed row policy", "dataset", policy.dataset_id, policy.role, policy.predicate
     )
     await session.commit()
-    await sync_superset_later(policy.dataset_id)
+    sync_superset_later(policy.dataset_id)

@@ -736,7 +736,7 @@ async def _apply(
         {"checksum": result["checksum"], "steps": [o[0] for o in result["outcomes"]]},
     )
     await session.commit()
-    await sync_superset_later(dataset.id)
+    sync_superset_later(dataset.id)
     return {
         "recipe": recipe_dict(recipe),
         "rows": rows,

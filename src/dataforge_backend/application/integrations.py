@@ -5,7 +5,9 @@ and the row policies of every role. Members open Superset and Jupyter through sh
 Jupyter kernels query through the DataForge API with the member's own token.
 """
 
+import asyncio
 import re
+from collections.abc import Coroutine
 from typing import Any
 from urllib.parse import quote
 
@@ -32,6 +34,27 @@ SUPERSET_ROLES = {"admin", "steward", "practitioner", "curator", "analyst", "exe
 JUPYTER_ROLES = {"admin", "steward", "practitioner", "curator"}
 _D3_FORMATS = {"money": "R,.0f", "rate": ".1%", "decimal": ",.2f", "count": ",.0f"}
 _bi_role_ready = False
+# Syncs that are still running. The set keeps them from being garbage-collected before they finish.
+_background: set[asyncio.Task[None]] = set()
+# One sync at a time, so two governance actions cannot interleave their calls to Superset.
+_sync_lock = asyncio.Lock()
+
+
+def in_background(work: Coroutine[Any, Any, None]) -> None:
+    """Run a Superset sync after the response has been sent.
+
+    A sync makes many calls to Superset and can take tens of seconds. The governance action it follows
+    (an approval, a cleaning run, publishing a metric) is already committed, so the member is not kept waiting.
+    """
+    task = asyncio.get_running_loop().create_task(work)
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+
+
+async def drain(timeout: float = 20.0) -> None:
+    """Let running syncs finish before the service stops."""
+    if _background:
+        await asyncio.wait(set(_background), timeout=timeout)
 
 
 async def status() -> dict[str, Any]:
@@ -137,10 +160,18 @@ async def sync_all(session: AsyncSession) -> dict[str, Any]:
 
 async def sync_all_quietly() -> None:
     try:
-        async with SessionLocal() as session:
+        async with _sync_lock, SessionLocal() as session:
             await sync_all(session)
     except Exception as error:  # noqa: BLE001 - Superset being down must not fail the caller
         log.warning("superset_sync_failed", error=str(error))
+
+
+async def sync_dataset_quietly(dataset_id: str) -> None:
+    try:
+        async with _sync_lock:
+            await sync_dataset(dataset_id)
+    except Exception as error:  # noqa: BLE001 - Superset being down must not undo a governance decision
+        log.warning("superset_sync_failed", dataset=dataset_id, error=str(error))
 
 
 def _require_superset(actor: Actor) -> None:

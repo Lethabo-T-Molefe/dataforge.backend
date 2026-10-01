@@ -91,3 +91,21 @@ def test_profile_measures_quality_and_missingness() -> None:
     assert set(profile["quality"]) >= {"completeness", "conformance", "duplicates", "outliers"}
     kinds = {i.kind for i in detect_insights(frame, profile, facts)}
     assert "quality" in kinds
+
+
+def test_dependencies_ignore_columns_that_barely_vary() -> None:
+    rows = 300
+    frame = pd.DataFrame(
+        {
+            "course": [["SQL basics", "Data literacy", "Stewardship 101"][i % 3] for i in range(rows)],
+            # Decided by the course, with one typing mistake: a rule worth reporting.
+            "level": ["advanced" if i == 7 else ["intro", "intro", "advanced"][i % 3] for i in range(rows)],
+            # A flag that is almost always False: every column "determines" it, which says nothing.
+            "fee_outlier": [str(i == 42) for i in range(rows)],
+        },
+        dtype=object,
+    )
+    profile, _ = profile_frame(frame, detect_pii(frame))
+    rules = {(d["left"], d["right"]): d for d in profile["dependencies"]}
+    assert rules[("course", "level")]["violations"] == 1
+    assert not any(right == "fee_outlier" for _, right in rules)

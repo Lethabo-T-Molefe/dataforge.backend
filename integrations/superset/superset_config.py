@@ -25,7 +25,9 @@ def _env(name: str, default: str | None = None) -> str:
 
 
 # Metadata (dashboards, charts, users) lives in its own database, next to DataForge's.
-SQLALCHEMY_DATABASE_URI = _env("SUPERSET_METADATA_URL", "postgresql+psycopg2://postgres@localhost:55432/superset")
+SQLALCHEMY_DATABASE_URI = _env(
+    "SUPERSET_METADATA_URL", "postgresql+psycopg2://postgres@localhost:55432/superset"
+)
 SECRET_KEY = _env("SUPERSET_SECRET_KEY")
 
 APP_NAME = "DataForge"
@@ -72,7 +74,10 @@ CSV_EXPORT = {"encoding": "utf-8"}
 ALLOWED_USER_CSV_SCHEMA_FUNC = lambda database, user: []  # noqa: E731
 
 # Frontend origins that may embed Superset.
-_FRONTEND = [o.strip() for o in _env("DATAFORGE_FRONTEND_ORIGINS", "http://localhost:8080,http://localhost:5173").split(",")]
+_FRONTEND = [
+    o.strip()
+    for o in _env("DATAFORGE_FRONTEND_ORIGINS", "http://localhost:8080,http://localhost:5173").split(",")
+]
 TALISMAN_ENABLED = True
 TALISMAN_CONFIG = {
     "content_security_policy": {

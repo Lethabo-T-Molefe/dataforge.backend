@@ -1,9 +1,32 @@
 """Request bodies. JSON uses camelCase, as the frontend does; Python uses snake_case."""
 
-from typing import Any, Literal
+import re
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
+
+# The address syntax browsers accept for <input type="email">, with at least one dot in the domain.
+_EMAIL = re.compile(
+    r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}"
+    r"@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+"
+)
+
+
+def _email(value: str) -> str:
+    """Check the shape of an address and lower-case it.
+
+    Only the shape is checked here. Organisations run mail on internal names such as name@org.local, which
+    stricter validators refuse as "not deliverable"; whether an address is real is settled by the
+    verification email, not by its domain.
+    """
+    address = value.strip()
+    if len(address) > 254 or not _EMAIL.fullmatch(address):
+        raise ValueError("Enter an email address like name@organisation.org.")
+    return address.lower()
+
+
+Email = Annotated[str, AfterValidator(_email)]
 
 
 class Body(BaseModel):
@@ -23,12 +46,12 @@ class FreeBody(BaseModel):
 
 class RegisterIn(Body):
     name: str = Field(min_length=1, max_length=200)
-    email: EmailStr
+    email: Email
     password: str = Field(min_length=1, max_length=256)
 
 
 class LoginIn(Body):
-    email: EmailStr
+    email: Email
     password: str = Field(min_length=1, max_length=256)
 
 
@@ -54,7 +77,7 @@ class LogoutIn(Body):
 
 
 class EmailIn(Body):
-    email: EmailStr
+    email: Email
 
 
 class ResetIn(Body):
@@ -88,7 +111,7 @@ class MemberUpdateIn(Body):
 
 class InviteIn(Body):
     name: str = Field(min_length=1, max_length=200)
-    email: EmailStr
+    email: Email
     role: str = "analyst"
     team: str | None = None
 
@@ -116,7 +139,7 @@ class DecisionIn(Body):
 
 
 class ShareIn(Body):
-    emails: list[EmailStr] = Field(min_length=1, max_length=50)
+    emails: list[Email] = Field(min_length=1, max_length=50)
 
 
 class InsightDecisionIn(Body):
@@ -251,6 +274,13 @@ class ImportIn(Body):
         "internal-confidential"
     )
     visibility: Literal["private", "team", "organisation"] = "private"
+
+
+class ContactIn(Body):
+    name: str = Field(min_length=2, max_length=200)
+    email: Email
+    organisation: str = Field(default="", max_length=200)
+    message: str = Field(min_length=8, max_length=4000)
 
 
 class OpenSqlIn(Body):

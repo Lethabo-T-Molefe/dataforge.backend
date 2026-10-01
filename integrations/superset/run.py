@@ -15,4 +15,6 @@ if __name__ == "__main__":
     load_env()
     port = os.environ.get("SUPERSET_PORT", "8088")
     host = os.environ.get("SUPERSET_HOST", "127.0.0.1")
-    raise SystemExit(subprocess.call([superset_exe(), "run", "-h", host, "-p", port, "--with-threads"], env=os.environ))
+    raise SystemExit(
+        subprocess.call([superset_exe(), "run", "-h", host, "-p", port, "--with-threads"], env=os.environ)
+    )

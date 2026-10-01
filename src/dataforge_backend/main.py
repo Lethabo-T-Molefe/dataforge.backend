@@ -11,7 +11,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from slowapi.middleware import SlowAPIMiddleware
 from sqlalchemy import text
 
-from .application import monitors
+from .application import integrations, monitors
 from .core.config import settings
 from .core.database import SessionLocal, engine
 from .core.logging import configure_logging, get_logger
@@ -66,6 +66,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+    # Superset syncs still running were started by actions that are already committed: let them finish.
+    await integrations.drain()
     await superset.close()
     await engine.dispose()
 

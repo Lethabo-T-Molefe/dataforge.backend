@@ -29,7 +29,9 @@ class DataForgeError(RuntimeError):
 def _client() -> httpx.Client:
     token = os.environ.get("DATAFORGE_TOKEN", "")
     if not token:
-        raise DataForgeError("No DataForge session in this kernel. Open Jupyter from DataForge (Workbench → Open in Jupyter).")
+        raise DataForgeError(
+            "No DataForge session in this kernel. Open Jupyter from DataForge (Workbench → Open in Jupyter)."
+        )
     base = os.environ.get("DATAFORGE_API_URL", "http://localhost:8000").rstrip("/")
     return httpx.Client(base_url=f"{base}/api/v1", headers={"Authorization": f"Bearer {token}"}, timeout=120)
 

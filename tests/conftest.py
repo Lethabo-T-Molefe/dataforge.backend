@@ -6,10 +6,16 @@ from pathlib import Path
 from dotenv import dotenv_values
 
 _ENV = dotenv_values(Path(__file__).resolve().parents[1] / ".env")
-_DEV_URL = os.environ.get("DATABASE_URL") or _ENV.get("DATABASE_URL") or "postgresql+asyncpg://postgres@localhost:5432/dataforge"
+_DEV_URL = (
+    os.environ.get("DATABASE_URL")
+    or _ENV.get("DATABASE_URL")
+    or "postgresql+asyncpg://postgres@localhost:5432/dataforge"
+)
 
 # Integration tests use their own database next to the development one (dropped and rebuilt per run).
-os.environ["DATABASE_URL"] = os.environ.get("DATAFORGE_TEST_DATABASE_URL") or _DEV_URL.rsplit("/", 1)[0] + "/dataforge_test"
+os.environ["DATABASE_URL"] = (
+    os.environ.get("DATAFORGE_TEST_DATABASE_URL") or _DEV_URL.rsplit("/", 1)[0] + "/dataforge_test"
+)
 os.environ["ENVIRONMENT"] = "test"
 os.environ["DEMO_MODE"] = "true"
 os.environ["ANTHROPIC_API_KEY"] = ""

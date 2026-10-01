@@ -76,6 +76,24 @@ Demo members (with `DEMO_MODE=true`) sign in as `thandi@dataforge.local` (analys
 `DEMO_PASSWORD`, or with one click through `POST /api/v1/auth/demo {"role": "analyst"}`. Turn demo mode off
 in production (the settings refuse to start otherwise).
 
+### The web app
+
+The web app in [`../skills-quest-forge`](../skills-quest-forge) is the client for this API. Run it with
+`npm install && npm run dev` (http://localhost:5173); it reads the API's address from `VITE_API_URL`.
+
+- `CORS_ORIGINS` must include the web app's origin, and `FRONTEND_URL` is where emailed links lead
+  (`/verify`, `/reset-password`). Both default to `http://localhost:5173`.
+- Sessions are an access token (short-lived, sent as `Authorization: Bearer`) and a rotating refresh token.
+  Changing or resetting a password ends every session.
+- Email addresses are checked for shape only, so internal domains such as `name@org.local` work. Whether an
+  address is real is settled by the verification email.
+- Listing endpoints answer with what the member may see, which can be nothing: an auditor gets an empty
+  analysis catalogue rather than a refusal. Actions the role may not take are refused with `403`.
+- Reading never writes: a member who cannot clean a dataset sees its latest recipe, and no draft is started.
+- Superset is kept in step after approvals, cleaning runs, policy changes and metric publishing. Those syncs run
+  after the response, so the action never waits on Superset; failures are logged as `superset_sync_failed`.
+- `POST /api/v1/contact` (public, rate-limited) emails the public contact form to `CONTACT_EMAIL`.
+
 ### Commands
 
 | Command | What it does |
@@ -147,7 +165,9 @@ Integration tests drop and rebuild the `_test` database next to `DATABASE_URL` (
 `DATAFORGE_TEST_DATABASE_URL`), run the migrations, seed through the real pipeline and exercise the API:
 registration, MFA, refresh-token reuse detection, lockout, the full upload → clean → approve → analyse path,
 reproducible reruns, masking, row policies, dashboards and embedding, alerts and root cause, predictions and
-exports, notebooks, search, erasure and the append-only audit trail.
+exports, notebooks, search, erasure and the append-only audit trail. `test_frontend_contract.py` covers what
+the web app relies on: viewers never start a draft recipe, a skipped step always saves, clearing a quota returns
+to the role's default, sharing can be withdrawn, exports cannot carry spreadsheet formulas, and the contact form.
 
 ## Docker
 

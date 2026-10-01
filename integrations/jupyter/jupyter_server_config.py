@@ -17,7 +17,11 @@ WORKSPACE.mkdir(parents=True, exist_ok=True)
 
 c = get_config()  # type: ignore[name-defined]  # noqa: F821
 
-_frontend = [o.strip() for o in os.environ.get("DATAFORGE_FRONTEND_ORIGINS", "http://localhost:8080").split(",") if o.strip()]
+_frontend = [
+    o.strip()
+    for o in os.environ.get("DATAFORGE_FRONTEND_ORIGINS", "http://localhost:8080").split(",")
+    if o.strip()
+]
 
 # Served under /jupyter so a reverse proxy can put it next to the DataForge frontend and API.
 c.ServerApp.base_url = "/jupyter/"

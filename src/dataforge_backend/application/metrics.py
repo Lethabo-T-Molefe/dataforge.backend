@@ -204,7 +204,7 @@ async def set_status(session: AsyncSession, actor: Actor, metric_id: str, status
         metric.name,
     )
     await session.commit()
-    await integrations.sync_all_quietly()
+    integrations.in_background(integrations.sync_all_quietly())
     return await definition_dict(session, metric)
 
 

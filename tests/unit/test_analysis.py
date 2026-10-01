@@ -15,14 +15,33 @@ from dataforge_backend.domain.analysis import (
     interpret,
     plan,
 )
-from dataforge_backend.domain.analysis.format import format_compact, format_delta, format_percent, format_value
+from dataforge_backend.domain.analysis.format import (
+    format_compact,
+    format_delta,
+    format_percent,
+    format_value,
+)
 from dataforge_backend.domain.semantic import ColumnInfo, MetricSpec, build_analysis_dataset, derive_fields
 from dataforge_backend.seed import COURSES, MONTHS, REGIONS, fact_rows
 
 METRICS = [
-    MetricSpec("completion_rate", "Completion rate", "rate", "ratio", numerator="completions", denominator="enrolments"),
+    MetricSpec(
+        "completion_rate",
+        "Completion rate",
+        "rate",
+        "ratio",
+        numerator="completions",
+        denominator="enrolments",
+    ),
     MetricSpec("enrolments", "Enrolments", "count", "additive", column="enrolments"),
-    MetricSpec("sessions_per_learner", "Sessions per learner", "decimal", "ratio", numerator="sessions", denominator="enrolments"),
+    MetricSpec(
+        "sessions_per_learner",
+        "Sessions per learner",
+        "decimal",
+        "ratio",
+        numerator="sessions",
+        denominator="enrolments",
+    ),
     MetricSpec("revenue", "Revenue", "money", "additive", column="revenue"),
     MetricSpec("avg_fee", "Average fee", "money", "ratio", numerator="revenue", denominator="enrolments"),
 ]
@@ -44,7 +63,9 @@ def dataset() -> AnalysisDataset:
         ColumnInfo("revenue", "integer", 168),
         ColumnInfo("sessions", "integer", 150),
     ]
-    return build_analysis_dataset("facts", "Facts", "silver.facts", derive_fields(columns, 168, METRICS), MONTHS)
+    return build_analysis_dataset(
+        "facts", "Facts", "silver.facts", derive_fields(columns, 168, METRICS), MONTHS
+    )
 
 
 def run_query(facts: pd.DataFrame, dataset: AnalysisDataset, config: Any) -> list[dict[str, Any]]:
@@ -87,7 +108,9 @@ def test_fields_come_from_the_semantic_layer(dataset: AnalysisDataset) -> None:
 
 
 def test_compare_pooled_rate_matches_hand_computation(facts: pd.DataFrame, dataset: AnalysisDataset) -> None:
-    config = config_from_dict(dataset, {"method": "compare", "measure": "completion_rate", "dimension": "region"})
+    config = config_from_dict(
+        dataset, {"method": "compare", "measure": "completion_rate", "dimension": "region"}
+    )
     result = interpret(dataset, config, run_query(facts, dataset, config))
     gauteng = facts[facts.region == "Gauteng"]
     expected = gauteng.completions.sum() / gauteng.enrolments.sum()
@@ -107,7 +130,9 @@ def test_explain_contributions_add_up_to_the_total(facts: pd.DataFrame, dataset:
         config_from_dict(dataset, {"method": "explain", "measure": "completion_rate"})
 
 
-def test_trend_summarise_and_relationship_read_sensibly(facts: pd.DataFrame, dataset: AnalysisDataset) -> None:
+def test_trend_summarise_and_relationship_read_sensibly(
+    facts: pd.DataFrame, dataset: AnalysisDataset
+) -> None:
     for body in (
         {"method": "trend", "measure": "completion_rate", "split": "course", "change": "mom"},
         {"method": "trend", "measure": "enrolments", "change": "cumulative", "smoothing": "ma3"},

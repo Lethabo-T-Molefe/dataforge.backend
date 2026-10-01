@@ -30,7 +30,7 @@ class Settings(BaseSettings):
             "http://127.0.0.1:5173",
         ]
     )
-    FRONTEND_URL: str = "http://localhost:8080"
+    FRONTEND_URL: str = "http://localhost:5173"
 
     # Identity
     JWT_SECRET: str = _INSECURE_DEFAULT_SECRET
@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     SMTP_USER: str | None = None
     SMTP_PASSWORD: str | None = None
     SMTP_FROM: str = "DataForge <no-reply@dataforge.local>"
+    # Where messages from the public contact form are delivered.
+    CONTACT_EMAIL: str = "amina@dataforge.local"
     SMTP_STARTTLS: bool = True
 
     # Ingestion

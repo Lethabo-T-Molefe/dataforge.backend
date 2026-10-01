@@ -14,9 +14,10 @@ from ....core.config import settings
 from ....core.errors import Unauthorized
 from ....core.security import utcnow
 from ....domain.roles import Permission
+from ....infrastructure import email as mail
 from ....infrastructure.notifications import verify_slack_signature
-from ..deps import current_actor, get_db
-from ..schemas import OpenSqlIn
+from ..deps import current_actor, get_db, limiter
+from ..schemas import ContactIn, OpenSqlIn
 
 router = APIRouter(tags=["Platform"])
 
@@ -157,6 +158,17 @@ async def slack_command(request: Request, session: AsyncSession = Depends(get_db
     return await slack.handle_command(
         session, form.get("team_id", ""), form.get("user_id", ""), form.get("text", "")
     )
+
+
+# ------------------------------------------------------------------ contact
+
+
+@router.post("/contact", status_code=202, tags=["Contact"])
+@limiter.limit("3/minute;20/day")
+async def contact(request: Request, body: ContactIn) -> dict[str, bool]:
+    """The public contact form. The message is emailed to the platform contact; nothing is stored."""
+    await mail.send_contact_message(body.name, body.email, body.organisation, body.message)
+    return {"accepted": True}
 
 
 # ------------------------------------------------------------------ health

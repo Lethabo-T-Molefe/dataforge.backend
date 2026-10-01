@@ -427,7 +427,7 @@ async def approve(session: AsyncSession, actor: Actor, dataset_id: str, reason: 
         f"{dataset.decision_reason}, classification {dataset.classification}",
     )
     await session.commit()
-    await sync_superset_later(dataset.id)
+    sync_superset_later(dataset.id)
     return dataset
 
 
@@ -449,7 +449,7 @@ async def reject(session: AsyncSession, actor: Actor, dataset_id: str, reason: s
         session, actor, "Rejected dataset", "dataset", dataset.id, dataset.name, reason.strip()
     )
     await session.commit()
-    await sync_superset_later(dataset.id)
+    sync_superset_later(dataset.id)
     return dataset
 
 
@@ -482,7 +482,7 @@ async def update_settings(
         session, actor, "Updated dataset", "dataset", dataset.id, dataset.name, ", ".join(described)
     )
     await session.commit()
-    await sync_superset_later(dataset.id)
+    sync_superset_later(dataset.id)
     return dataset
 
 
@@ -686,7 +686,7 @@ async def promote(session: AsyncSession, actor: Actor, dataset_id: str, columns:
         session, actor, "Promoted to gold", "dataset", dataset.id, dataset.name, f"Columns: {', '.join(keep)}"
     )
     await session.commit()
-    await sync_superset_later(dataset.id)
+    sync_superset_later(dataset.id)
     return dataset
 
 
@@ -750,16 +750,13 @@ async def erase(session: AsyncSession, actor: Actor, dataset_id: str, reason: st
         receipt,
     )
     await session.commit()
-    await sync_superset_later(dataset.id)
+    sync_superset_later(dataset.id)
     return receipt
 
 
 # ------------------------------------------------------------------ Superset sync hook
 
 
-async def sync_superset_later(dataset_id: str) -> None:
-    """Keep Superset in step. Failures are logged and never block governance actions."""
-    try:
-        await integrations.sync_dataset(dataset_id)
-    except Exception as error:  # noqa: BLE001 - Superset being down must not fail an approval
-        log.warning("superset_sync_failed", dataset=dataset_id, error=str(error))
+def sync_superset_later(dataset_id: str) -> None:
+    """Keep Superset in step, after the response. Failures are logged and never block governance actions."""
+    integrations.in_background(integrations.sync_dataset_quietly(dataset_id))

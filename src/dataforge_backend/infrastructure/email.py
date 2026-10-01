@@ -23,11 +23,13 @@ def _send_sync(message: EmailMessage) -> None:
         client.send_message(message)
 
 
-async def send_email(to: str, subject: str, body: str) -> None:
+async def send_email(to: str, subject: str, body: str, *, reply_to: str | None = None) -> None:
     message = EmailMessage()
     message["From"] = settings.SMTP_FROM
     message["To"] = to
     message["Subject"] = subject
+    if reply_to:
+        message["Reply-To"] = reply_to
     message.set_content(body)
     sent.append(message)
     del sent[:-50]
@@ -56,4 +58,17 @@ async def send_password_reset(to: str, name: str, token: str) -> None:
         to,
         "Reset your DataForge password",
         f"Hello {name},\n\nChoose a new password here:\n{link}\n\nIf you did not ask for this, ignore this email.\n",
+    )
+
+
+async def send_contact_message(name: str, sender: str, organisation: str, body: str) -> None:
+    """A message from the public contact form, delivered to the platform contact with the sender as reply-to."""
+    # Header values are single lines: whatever was typed, the name and organisation cannot add headers.
+    who = " ".join(name.split())
+    where = " ".join(organisation.split())
+    await send_email(
+        settings.CONTACT_EMAIL,
+        f"DataForge contact form: {who}"[:150],
+        f"From: {who} <{sender}>\nOrganisation: {where or 'not given'}\n\n{body.strip()}\n",
+        reply_to=sender,
     )

@@ -1,9 +1,29 @@
 import pytest
 
-from dataforge_backend.domain.assistant import AssistantPlan, Catalogue, Refusal, detect_injection, plan_question
+from dataforge_backend.domain.assistant import (
+    AssistantPlan,
+    Catalogue,
+    Refusal,
+    detect_injection,
+    plan_question,
+)
 from dataforge_backend.domain.monitoring import GroupChange, MonitorRule, RootCauseInput, evaluate, root_cause
-from dataforge_backend.domain.prediction import FactorInput, FactorSpec, ModelError, ModelSpec, score_cohort, validate_model
-from dataforge_backend.domain.semantic import ColumnInfo, MetricError, MetricSpec, build_analysis_dataset, derive_fields, validate_metric
+from dataforge_backend.domain.prediction import (
+    FactorInput,
+    FactorSpec,
+    ModelError,
+    ModelSpec,
+    score_cohort,
+    validate_model,
+)
+from dataforge_backend.domain.semantic import (
+    ColumnInfo,
+    MetricError,
+    MetricSpec,
+    build_analysis_dataset,
+    derive_fields,
+    validate_metric,
+)
 from dataforge_backend.domain.sql_guard import QueryRefused, TableGrant, guard_select, validate_predicate
 from dataforge_backend.seed import COURSES, MONTHS, REGIONS, mulberry32
 
@@ -46,7 +66,14 @@ def test_guard_applies_row_policies_and_qualifies_tables() -> None:
 
 
 def test_metrics_are_validated_against_columns() -> None:
-    rate = MetricSpec("completion_rate", "Completion rate", "rate", "ratio", numerator="completions", denominator="enrolments")
+    rate = MetricSpec(
+        "completion_rate",
+        "Completion rate",
+        "rate",
+        "ratio",
+        numerator="completions",
+        denominator="enrolments",
+    )
     validate_metric(rate, {"completions": "integer", "enrolments": "integer"})
     with pytest.raises(MetricError):
         validate_metric(rate, {"completions": "text", "enrolments": "integer"})
@@ -58,7 +85,13 @@ def test_model_weights_must_add_up_to_one() -> None:
     factors = (FactorSpec("a", "A", 0.6, "up", "m"), FactorSpec("b", "B", 0.3, "down", "m"))
     with pytest.raises(ModelError):
         validate_model(ModelSpec("m", "1", "o", "d", factors))
-    spec = ModelSpec("m", "1", "Outcome", "d", (FactorSpec("a", "A", 0.7, "up", "m"), FactorSpec("b", "B", 0.3, "down", "m")))
+    spec = ModelSpec(
+        "m",
+        "1",
+        "Outcome",
+        "d",
+        (FactorSpec("a", "A", 0.7, "up", "m"), FactorSpec("b", "B", 0.3, "down", "m")),
+    )
     result = score_cohort(
         spec,
         {"a": FactorInput(0.8, 0.6, 0.1, 20, "rate"), "b": FactorInput(10, 10, 5, 20, "count")},
@@ -95,8 +128,19 @@ def test_assistant_grounds_or_refuses() -> None:
         ColumnInfo("enrolments", "integer", 100),
         ColumnInfo("completions", "integer", 100),
     ]
-    metrics = [MetricSpec("completion_rate", "Completion rate", "rate", "ratio", numerator="completions", denominator="enrolments")]
-    dataset = build_analysis_dataset("cc", "Course completions", "silver.cc", derive_fields(columns, 168, metrics), MONTHS)
+    metrics = [
+        MetricSpec(
+            "completion_rate",
+            "Completion rate",
+            "rate",
+            "ratio",
+            numerator="completions",
+            denominator="enrolments",
+        )
+    ]
+    dataset = build_analysis_dataset(
+        "cc", "Course completions", "silver.cc", derive_fields(columns, 168, metrics), MONTHS
+    )
     catalogue = Catalogue([dataset], {"completion_rate": ["completion"]})
     trend = plan_question("How has completion rate changed by course this year?", catalogue)
     assert isinstance(trend, AssistantPlan) and trend.method == "trend" and trend.split == "course"
@@ -125,7 +169,15 @@ def test_seed_facts_match_the_frontend_totals() -> None:
 
     rows = fact_rows()
     assert len(rows) == 168
-    assert rows[0] == {"region": "Gauteng", "course": "Data literacy", "month": "2025-10", "enrolments": 1153, "completions": 810, "revenue": 1408990, "sessions": 3561}
+    assert rows[0] == {
+        "region": "Gauteng",
+        "course": "Data literacy",
+        "month": "2025-10",
+        "enrolments": 1153,
+        "completions": 810,
+        "revenue": 1408990,
+        "sessions": 3561,
+    }
     # Totals from the frontend generator run in Node.
     assert sum(r["enrolments"] for r in rows) == 47855
     assert sum(r["completions"] for r in rows) == 31889
