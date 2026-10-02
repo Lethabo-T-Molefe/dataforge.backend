@@ -26,7 +26,7 @@ def _env(name: str, default: str | None = None) -> str:
 
 # Metadata (dashboards, charts, users) lives in its own database, next to DataForge's.
 SQLALCHEMY_DATABASE_URI = _env(
-    "SUPERSET_METADATA_URL", "postgresql+psycopg2://postgres@localhost:55432/superset"
+    "SUPERSET_METADATA_URL", "postgresql+psycopg2://postgres:postgres@localhost:5432/superset"
 )
 SECRET_KEY = _env("SUPERSET_SECRET_KEY")
 

@@ -161,7 +161,7 @@ uv run ruff check . && uv run ruff format --check .
 uv run mypy src          # strict
 ```
 
-Integration tests drop and rebuild the `_test` database next to `DATABASE_URL` (override with
+Integration tests create (on first run), drop and rebuild the `_test` database next to `DATABASE_URL` (override with
 `DATAFORGE_TEST_DATABASE_URL`), run the migrations, seed through the real pipeline and exercise the API:
 registration, MFA, refresh-token reuse detection, lockout, the full upload → clean → approve → analyse path,
 reproducible reruns, masking, row policies, dashboards and embedding, alerts and root cause, predictions and
