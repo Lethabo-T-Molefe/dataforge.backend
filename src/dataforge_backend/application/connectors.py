@@ -4,26 +4,30 @@ Any member may request a connector; a steward approves it. Credentials are encry
 returned. Imported tables go through the same pipeline as uploads: bronze, PII scan, profile, approval.
 """
 
+import asyncio
+import io
 from typing import Any
+from zipfile import BadZipFile
 
 import pandas as pd
 from openpyxl import load_workbook
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..core.config import settings
 from ..core.crypto import decrypt_secret, encrypt_secret
 from ..core.errors import Forbidden, NotFound, ValidationFailed
 from ..core.security import utcnow
 from ..domain.roles import Permission
-from ..infrastructure import external_db
+from ..infrastructure import external_db, storage
 from ..infrastructure.db.models import Connector, Dataset
-from . import audit
+from . import audit, inbox
+from .cleaning import frame_checksum
 from .common import Actor, humanize, slugify
 from .datasets import ingest_frame, summary
 from .runtime import sandbox
 
 KINDS = ("postgres", "warehouse", "spreadsheet")
+REFRESH_CADENCES = {"hourly": 3600, "daily": 86_400, "weekly": 604_800}
 KIND_LABELS = {"postgres": "PostgreSQL", "warehouse": "Warehouse", "spreadsheet": "Spreadsheet"}
 
 
@@ -45,6 +49,7 @@ def connector_dict(connector: Connector, actor: Actor) -> dict[str, Any]:
             if k in ("host", "port", "database", "schema", "user", "sslmode", "filename")
         },
         "lastError": connector.last_error,
+        "refreshCadence": connector.refresh_cadence,
         "hasCredentials": connector.secret_enc is not None,
         "canManage": actor.can(Permission.MANAGE_CONNECTORS),
     }
@@ -65,13 +70,25 @@ def _source_config(connector: Connector) -> external_db.SourceConfig:
     )
 
 
-def _spreadsheet_path(connector: Connector) -> str:
-    return str(
-        settings.STORAGE_DIR
-        / "connectors"
-        / connector.id
-        / str((connector.config or {}).get("filename", "workbook.xlsx"))
-    )
+def _workbook_key(connector: Connector) -> str:
+    config = connector.config or {}
+    # Workbooks uploaded before keys were recorded sit at the connector's folder under their file name.
+    return str(config.get("key") or f"connectors/{connector.id}/{config.get('filename', 'workbook.xlsx')}")
+
+
+async def _workbook(connector: Connector) -> bytes:
+    try:
+        return await storage.read(_workbook_key(connector))
+    except FileNotFoundError as error:
+        raise ValidationFailed("Upload the spreadsheet first.") from error
+
+
+def _sheets(content: bytes) -> list[dict[str, Any]]:
+    book = load_workbook(io.BytesIO(content), read_only=True)
+    try:
+        return [{"name": sheet.title, "columns": sheet.max_column or 0} for sheet in book.worksheets]
+    finally:
+        book.close()
 
 
 async def list_connectors(session: AsyncSession, actor: Actor) -> list[dict[str, Any]]:
@@ -144,6 +161,15 @@ async def request(session: AsyncSession, actor: Actor, body: dict[str, Any]) -> 
         source_path,
         "Read-only; credentials encrypted at rest",
     )
+    if not actor.can(Permission.MANAGE_CONNECTORS):
+        inbox.notify(
+            session,
+            await inbox.stewards(session),
+            "approval",
+            f"{actor.name} asked to connect {name}",
+            f"{source_path}. Test and approve it before anyone imports from it.",
+            "/datasets/connect",
+        )
     await session.commit()
     if actor.can(Permission.MANAGE_CONNECTORS) and kind != "spreadsheet":
         return await approve(session, actor, connector.id)
@@ -189,12 +215,11 @@ async def test(session: AsyncSession, actor: Actor, connector_id: str) -> dict[s
 
 async def _tables(connector: Connector) -> list[dict[str, Any]]:
     if connector.kind == "spreadsheet":
-        path = _spreadsheet_path(connector)
+        content = await _workbook(connector)
         try:
-            book = load_workbook(path, read_only=True)
-        except FileNotFoundError as error:
-            raise ValidationFailed("Upload the spreadsheet first.") from error
-        return [{"name": sheet.title, "columns": sheet.max_column or 0} for sheet in book.worksheets]
+            return await asyncio.to_thread(_sheets, content)
+        except (OSError, ValueError, KeyError, BadZipFile) as error:
+            raise ValidationFailed("The workbook could not be read. Upload it again as .xlsx.") from error
     return await external_db.list_tables(_source_config(connector))
 
 
@@ -215,14 +240,61 @@ async def upload_workbook(
         raise Forbidden("Only the requester or a steward can replace the workbook.")
     if not filename.lower().endswith((".xlsx", ".xlsm")):
         raise ValidationFailed("Upload an Excel workbook (.xlsx).")
-    connector.config = {**(connector.config or {}), "filename": "workbook.xlsx"}
-    folder = settings.STORAGE_DIR / "connectors" / connector.id
-    folder.mkdir(parents=True, exist_ok=True)
-    (folder / "workbook.xlsx").write_bytes(content)
+    previous = (connector.config or {}).get("key")
+    key = await storage.store_workbook(connector.id, content)
+    connector.config = {**(connector.config or {}), "filename": filename, "key": key}
+    if previous and previous != key:
+        await storage.remove(str(previous))
     connector.source_path = f"Spreadsheet · {filename}"
     await audit.record(session, actor, "Uploaded workbook", "connector", connector.id, filename)
     await session.commit()
     return await test(session, actor, connector.id)
+
+
+async def read_source(connector: Connector, table: str, actor: Actor) -> pd.DataFrame:
+    """One table (or sheet) of the source, read-only, as raw object columns."""
+    if connector.kind == "spreadsheet":
+        content = await _workbook(connector)
+        if table not in {s["name"] for s in await asyncio.to_thread(_sheets, content)}:
+            raise ValidationFailed(f"{table} is not a sheet in this workbook.")
+        frame: pd.DataFrame
+        frame, _ = await sandbox.run_python(
+            storage.read_sheet,
+            content,
+            table,
+            user_id=actor.member_id,
+            kind="profile",
+            description=f"Read sheet {table}",
+            isolated=True,
+        )
+        return frame
+    return await external_db.read_table(_source_config(connector), table)
+
+
+async def set_refresh(
+    session: AsyncSession, actor: Actor, connector_id: str, cadence: str | None
+) -> dict[str, Any]:
+    """How often a steward wants this source re-read. Refreshes keep approvals only when nothing changed shape."""
+    actor.require(Permission.MANAGE_CONNECTORS, "Only a Data Steward schedules refreshes.")
+    connector = await _get(session, connector_id)
+    if cadence is not None and cadence not in REFRESH_CADENCES:
+        raise ValidationFailed("Refresh hourly, daily, weekly, or only when asked.")
+    if cadence and connector.kind == "spreadsheet":
+        raise ValidationFailed(
+            "A workbook only changes when a new one is uploaded, so it is not refreshed on a schedule."
+        )
+    connector.refresh_cadence = cadence
+    await audit.record(
+        session,
+        actor,
+        "Scheduled refresh" if cadence else "Stopped scheduled refresh",
+        "connector",
+        connector.id,
+        connector.source_path,
+        cadence or "Only when asked",
+    )
+    await session.commit()
+    return connector_dict(connector, actor)
 
 
 async def import_table(
@@ -234,16 +306,8 @@ async def import_table(
     if connector.status != "connected":
         raise ValidationFailed("This connector is not connected yet. A steward approves it first.")
     table = str(body.get("table", ""))
-    if connector.kind == "spreadsheet":
-        path = _spreadsheet_path(connector)
-        frame, _ = await sandbox.run_python(
-            lambda: pd.read_excel(path, sheet_name=table, dtype=object),
-            user_id=actor.member_id,
-            kind="profile",
-            description=f"Read sheet {table}",
-        )
-    else:
-        frame = await external_db.read_table(_source_config(connector), table)
+    frame = await read_source(connector, table, actor)
+    checksum = await asyncio.to_thread(frame_checksum, frame)
     dataset = await ingest_frame(
         session,
         actor,
@@ -257,6 +321,7 @@ async def import_table(
         connector_id=connector.id,
         dataset_id=body.get("datasetId"),
         landing_file=None,
+        source_checksum=checksum,
     )
     connector.last_sync_at = utcnow()
     await session.commit()
@@ -264,45 +329,22 @@ async def import_table(
     return summary(dataset, actor)
 
 
-async def sync(session: AsyncSession, actor: Actor, connector_id: str) -> list[dict[str, Any]]:
-    """Re-read every dataset that came from this connector, as new versions."""
-    connector = await _get(session, connector_id)
+async def get(session: AsyncSession, connector_id: str) -> Connector:
+    return await _get(session, connector_id)
+
+
+async def datasets_of(session: AsyncSession, connector: Connector) -> list[Dataset]:
     rows = await session.execute(
         select(Dataset).where(Dataset.connector_id == connector.id, Dataset.erased_at.is_(None))
     )
-    out = []
-    for dataset in rows.scalars().all():
-        table = dataset.source_name.rsplit(" · ", 1)[-1]
-        out.append(
-            await import_table(
-                session,
-                actor,
-                connector.id,
-                {
-                    "table": table,
-                    "datasetId": dataset.id,
-                    "name": dataset.name,
-                    "classification": dataset.classification,
-                    "visibility": dataset.visibility,
-                },
-            )
-        )
-    await audit.record(
-        session,
-        actor,
-        "Synced connector",
-        "connector",
-        connector.id,
-        connector.source_path,
-        f"{len(out)} datasets refreshed",
-    )
-    await session.commit()
-    return out
+    return list(rows.scalars().all())
 
 
 async def delete(session: AsyncSession, actor: Actor, connector_id: str) -> None:
     actor.require(Permission.MANAGE_CONNECTORS, "Only a Data Steward can remove connectors.")
     connector = await _get(session, connector_id)
+    if connector.kind == "spreadsheet":
+        await storage.remove_connector_files(connector.id)
     await session.delete(connector)
     await audit.record(session, actor, "Removed connector", "connector", connector_id, connector.source_path)
     await session.commit()

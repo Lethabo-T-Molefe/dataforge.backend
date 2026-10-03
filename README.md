@@ -49,12 +49,26 @@ version), `silver` (cleaned, typed, masked) and `gold` (analytics-ready).
 - **Assistant.** Claude (when `ANTHROPIC_API_KEY` is set) or the rule-based planner proposes a *plan* (dataset,
   measure, method, grouping, filters, period) constrained by a JSON schema whose enums hold only the member's
   permitted fields. The plan is validated again, the analysis engine composes the SQL, and the sandbox runs it
-  under the member's role. Personal questions, predictions, prompt injection and ungrounded questions are
-  refused and recorded. The model never writes SQL and never sees data rows. Requests use `claude-opus-5`
-  with server-side refusal fallbacks enabled (`fallbacks: "default"`); remove that parameter in
-  `infrastructure/llm.py` if you do not want declined requests retried on another model.
+  under the member's role. It answers single figures, comparisons and trends, explains a change in a total
+  ("why did revenue fall last month?") as each group's contribution, and tests whether two measures move
+  together. A follow-up ("what about Gauteng?", "and by course?") builds on the member's own previous answer
+  when the client sends its id as `contextId`. Personal questions, forecasts, prompt injection and ungrounded
+  questions are refused and recorded. The model never writes SQL and never sees data rows. Requests use
+  `claude-opus-5-5` at low effort with server-side refusal fallbacks enabled (`fallbacks: "default"`); remove
+  that parameter in `infrastructure/llm.py` if you do not want declined requests retried on another model.
 - **Audit.** `app.audit_events` is append-only: a trigger rejects `UPDATE`, `DELETE` and `TRUNCATE` for everyone.
 - **Erasure.** Erasing a dataset drops every layer's tables and landed files and returns a hashed receipt.
+- **Landed files** are kept on local disk, or in Cloudinary when `CLOUDINARY_URL` is set. Cloudinary holds them
+  as raw, authenticated assets (no public URL reaches them), encrypted with AES-256-GCM before they leave the
+  API (`STORAGE_ENCRYPT`, keyed from `SECRETS_KEY`). Erasure deletes them there too.
+- **Refresh.** A steward can have a connector re-read hourly, daily or weekly, or anyone allowed can press
+  "Refresh now". Each dataset from it lands a new raw version (only when the source changed), reruns its latest
+  applied recipe, and keeps its approval only if the cleaned columns, their types and the personal information
+  are unchanged. Anything else goes back to a steward, who is notified. Each dataset refreshes in one
+  transaction, so readers see the old data or the new.
+- **Notifications.** Alerts, decisions on a member's data, data waiting for a steward, shares and refresh
+  problems appear under the bell in the web app (`GET /api/v1/notifications`). Alerts are also emailed to the
+  monitor's owner unless they turn it off.
 
 ## Running locally
 
@@ -83,8 +97,11 @@ The web app in [`../skills-quest-forge`](../skills-quest-forge) is the client fo
 
 - `CORS_ORIGINS` must include the web app's origin, and `FRONTEND_URL` is where emailed links lead
   (`/verify`, `/reset-password`). Both default to `http://localhost:5173`.
-- Sessions are an access token (short-lived, sent as `Authorization: Bearer`) and a rotating refresh token.
-  Changing or resetting a password ends every session.
+- Sessions are an access token (short-lived, in the response body, sent as `Authorization: Bearer`) and a
+  rotating refresh token that only ever travels in an HttpOnly cookie scoped to `/api/v1/auth`, so scripts in
+  the page cannot read it. The web app calls the API with credentials included. When the web app and the API
+  are on different sites, set `REFRESH_COOKIE_SAMESITE=none`. Changing or resetting a password ends every
+  session.
 - Email addresses are checked for shape only, so internal domains such as `name@org.local` work. Whether an
   address is real is settled by the verification email.
 - Listing endpoints answer with what the member may see, which can be nothing: an auditor gets an empty
@@ -102,6 +119,7 @@ The web app in [`../skills-quest-forge`](../skills-quest-forge) is the client fo
 | `dataforge seed-demo` | Create demo members, datasets, metrics, dashboards, monitors, a model version |
 | `dataforge create-admin` | Create or promote an administrator |
 | `dataforge evaluate-monitors` | Evaluate due monitors once (for cron when `MONITOR_INTERVAL_SECONDS=0`) |
+| `dataforge refresh-connectors` | Refresh connectors whose schedule is due, once (for cron when `MONITOR_INTERVAL_SECONDS=0`) |
 | `dataforge superset-sync` | Create the read-only BI login and sync datasets, metrics and row policies to Superset |
 | `dataforge serve` | Run the API |
 
@@ -165,7 +183,12 @@ Integration tests create (on first run), drop and rebuild the `_test` database n
 `DATAFORGE_TEST_DATABASE_URL`), run the migrations, seed through the real pipeline and exercise the API:
 registration, MFA, refresh-token reuse detection, lockout, the full upload → clean → approve → analyse path,
 reproducible reruns, masking, row policies, dashboards and embedding, alerts and root cause, predictions and
-exports, notebooks, search, erasure and the append-only audit trail. `test_frontend_contract.py` covers what
+exports, notebooks, search, erasure and the append-only audit trail. `test_refresh.py` refreshes a real
+connector (a schema in the test database) and checks that approval is kept or sent back for review, and that
+the right members are notified; `test_assistant.py` covers explaining changes, relationships and follow-ups.
+The Claude request itself is checked against a fake client (`tests/unit/test_llm.py`), and the worker pool and
+Cloudinary store have their own unit tests. GitHub Actions runs all of this, plus the Docker image builds,
+on every push (`.github/workflows/ci.yml`). `test_frontend_contract.py` covers what
 the web app relies on: viewers never start a draft recipe, a skipped step always saves, clearing a quota returns
 to the role's default, sharing can be withdrawn, exports cannot carry spreadsheet formulas, and the contact form.
 
@@ -176,9 +199,14 @@ to `.env`, set the secrets named in the compose file, then `docker compose up --
 
 ## Limits to know about
 
-- **Sandbox isolation.** SQL runs under a least-privilege database role with caps; cleaning and scoring run in
-  worker threads with wall-clock caps. Container isolation per session (gVisor) is an infrastructure concern and
-  is not part of this service.
+- **Sandbox isolation.** SQL runs under a least-privilege database role with caps. Parsing, profiling and full
+  cleaning runs happen in worker processes (`SANDBOX_WORKERS` at once) that are killed at their time limit, with
+  a memory cap on Linux (`SANDBOX_WORKER_MEMORY_MB`); previews on a 400-row sample run in threads. A request
+  still waits for its job to finish, and jobs do not survive a restart: a durable queue with a status endpoint
+  is the next step for very large files. Container isolation per session (gVisor) is an infrastructure concern
+  and is not part of this service.
+- **Raw history.** Every changed refresh keeps a new bronze version for lineage. There is no retention policy
+  yet, so a source that changes every hour grows bronze every hour.
 - **Jupyter isolation.** One Jupyter server serves all members. Folders, kernels and data access are separated,
   but kernels share the server's operating-system user. For hard isolation between members, run JupyterHub
   with a container spawner and the same `dataforge` library.

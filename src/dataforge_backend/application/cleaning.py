@@ -41,7 +41,7 @@ from ..domain.profiling import profile_frame
 from ..domain.roles import Permission
 from ..infrastructure import warehouse
 from ..infrastructure.db.models import CleaningRecipe, CleaningStep, Dataset, LineageEdge
-from . import audit, catalogue, quotas
+from . import audit, catalogue, inbox, quotas
 from .common import Actor, humanize
 from .datasets import get_visible, record_version, sync_superset_later
 from .runtime import sandbox
@@ -657,19 +657,25 @@ def _clean_full(bronze: pd.DataFrame, specs: list[RecipeStepSpec], ctx: Cleaning
 
 
 async def _apply(
-    session: AsyncSession, actor: Actor, dataset: Dataset, recipe: CleaningRecipe
+    session: AsyncSession, actor: Actor, dataset: Dataset, recipe: CleaningRecipe, *, commit: bool = True
 ) -> dict[str, Any]:
+    """Run the recipe over the whole raw table into silver. Without `commit`, the caller finishes the
+    transaction (a scheduled refresh does, so readers see the old data or the new, never a gap)."""
     bronze = await _load_bronze(session, dataset)
     ctx = await _context(session, actor, dataset, list(bronze.columns))
     specs = _specs(recipe)
     await quotas.check_compute(session, actor)
     try:
         result, elapsed = await sandbox.run_python(
-            lambda: _clean_full(bronze, specs, ctx),
+            _clean_full,
+            bronze,
+            specs,
+            ctx,
             user_id=actor.member_id,
             kind="cleaning",
             description=f"Run recipe v{recipe.version} on {dataset.name}",
             timeout_s=900,
+            isolated=True,
         )
     except OperationError as error:
         raise ValidationFailed(f"A step could not run on the full data: {error}") from error
@@ -735,8 +741,19 @@ async def _apply(
         f"Recipe v{recipe.version} wrote {rows} rows to {silver}; masked {', '.join(result['masked']) or 'no new columns'}",
         {"checksum": result["checksum"], "steps": [o[0] for o in result["outcomes"]]},
     )
-    await session.commit()
-    sync_superset_later(dataset.id)
+    if commit:
+        count = f"{rows:,}".replace(",", " ")
+        inbox.notify(
+            session,
+            await inbox.stewards(session),
+            "approval",
+            f"{dataset.name} is ready for review",
+            f"{actor.name} cleaned it into {count} rows. Nobody can query it until it is approved.",
+            f"/datasets/{dataset.id}",
+            skip=actor.id,
+        )
+        await session.commit()
+        sync_superset_later(dataset.id)
     return {
         "recipe": recipe_dict(recipe),
         "rows": rows,
@@ -769,8 +786,30 @@ async def rerun(session: AsyncSession, actor: Actor, dataset_id: str, recipe_id:
     source = await session.get(CleaningRecipe, recipe_id)
     if source is None or source.dataset_id != dataset.id or source.status != "applied":
         raise NotFound("Applied recipe not found for this dataset.")
-    await session.refresh(source, ["steps"])
     previous = source.output_checksum
+    recipe = await copy_applied(session, actor, dataset, source)
+    result = await _apply(session, actor, dataset, recipe)
+    result["reproduced"] = previous == result["checksum"] if previous else None
+    result["previousChecksum"] = previous
+    if previous and previous != result["checksum"]:
+        result["note"] = "The output differs from the earlier run because the raw data has a new version."
+    return result
+
+
+async def latest_applied(session: AsyncSession, dataset: Dataset) -> CleaningRecipe | None:
+    rows = await session.execute(
+        select(CleaningRecipe)
+        .where(CleaningRecipe.dataset_id == dataset.id, CleaningRecipe.status == "applied")
+        .order_by(CleaningRecipe.version.desc())
+    )
+    return rows.scalars().first()
+
+
+async def copy_applied(
+    session: AsyncSession, actor: Actor, dataset: Dataset, source: CleaningRecipe
+) -> CleaningRecipe:
+    """A new recipe version with an applied recipe's steps, ready to run. A leftover draft is replaced."""
+    await session.refresh(source, ["steps"])
     recipe = CleaningRecipe(
         dataset_id=dataset.id,
         version=int(
@@ -815,9 +854,11 @@ async def rerun(session: AsyncSession, actor: Actor, dataset_id: str, recipe_id:
         )
     await session.flush()
     await session.refresh(recipe, ["steps"])
-    result = await _apply(session, actor, dataset, recipe)
-    result["reproduced"] = previous == result["checksum"] if previous else None
-    result["previousChecksum"] = previous
-    if previous and previous != result["checksum"]:
-        result["note"] = "The output differs from the earlier run because the raw data has a new version."
-    return result
+    return recipe
+
+
+async def apply_recipe_to_new_version(
+    session: AsyncSession, actor: Actor, dataset: Dataset, recipe: CleaningRecipe
+) -> dict[str, Any]:
+    """Run a copied recipe without committing, for a refresh that decides on approval in the same step."""
+    return await _apply(session, actor, dataset, recipe, commit=False)

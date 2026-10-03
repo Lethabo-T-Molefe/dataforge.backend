@@ -16,6 +16,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    true,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -125,6 +126,7 @@ class Connector(TimestampMixin, Base):
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error: Mapped[str | None] = mapped_column(Text)
     approved_by: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    refresh_cadence: Mapped[str | None] = mapped_column(String(16))  # hourly | daily | weekly | None
 
 
 class Dataset(TimestampMixin, Base):
@@ -391,6 +393,7 @@ class Monitor(TimestampMixin, Base):
     owner_label: Mapped[str] = mapped_column(String(200), default="")
     status: Mapped[str] = mapped_column(String(16), default="watching")  # watching | paused
     notify_slack: Mapped[bool] = mapped_column(Boolean, default=False)
+    notify_email: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_value: Mapped[float | None] = mapped_column(Float)
     last_month: Mapped[str | None] = mapped_column(String(7))
@@ -554,6 +557,24 @@ class AuditEvent(Base):
     request_id: Mapped[str | None] = mapped_column(String(64))
     ip: Mapped[str | None] = mapped_column(String(64))
     meta: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+
+
+class Notification(Base):
+    """Something a member should know about: an alert, a decision on their data, a refresh that needs a look."""
+
+    __tablename__ = "notifications"
+    __table_args__ = (Index("ix_notifications_user_created", "user_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    kind: Mapped[str] = mapped_column(String(32))  # alert | approval | decision | share | refresh
+    title: Mapped[str] = mapped_column(String(300))
+    body: Mapped[str] = mapped_column(Text, default="")
+    link: Mapped[str | None] = mapped_column(String(300))  # a path in the web app
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), default=utcnow
+    )
 
 
 class SlackLink(Base):

@@ -25,6 +25,7 @@ from ..domain.assistant import (
     plan_from_model,
     plan_question,
     plan_schema,
+    previous_prompt,
     refusal,
 )
 from ..domain.roles import Permission
@@ -47,19 +48,40 @@ async def _catalogue(session: AsyncSession, actor: Actor) -> Catalogue:
     return Catalogue(datasets, synonyms)
 
 
-async def _plan(question: str, cat: Catalogue) -> tuple[AssistantPlan | Refusal, str, str | None]:
+async def _previous(
+    session: AsyncSession, actor: Actor, context_id: str | None
+) -> tuple[AssistantPlan, str] | None:
+    """The member's own earlier answer that a new question may follow up, with its question."""
+    if not context_id:
+        return None
+    earlier = await session.get(AssistantQuery, context_id)
+    if earlier is None or earlier.user_id != actor.id or earlier.refused or not earlier.plan:
+        return None
+    plan = AssistantPlan.from_dict(earlier.plan)
+    return (plan, earlier.question) if plan else None
+
+
+async def _plan(
+    question: str, cat: Catalogue, previous: tuple[AssistantPlan, str] | None = None
+) -> tuple[AssistantPlan | Refusal, str, str | None]:
     """(plan, planner, model). Safety checks run first and cannot be overridden by the model."""
-    first = plan_question(question, cat)
+    earlier = previous[0] if previous else None
+    first = plan_question(question, cat, earlier)
     if isinstance(first, Refusal) and first.reason in ("injection", "personal"):
         return first, "rules", None
     if not settings.llm_enabled or not cat.datasets:
         return first, "rules", None
     try:
-        proposal, model = await llm.propose_plan(question, catalogue_prompt(cat), plan_schema(cat))
+        proposal, model = await llm.propose_plan(
+            question,
+            catalogue_prompt(cat),
+            plan_schema(cat),
+            previous_prompt(previous[1], previous[0]) if previous else None,
+        )
     except llm.PlanUnavailable as error:
         log.info("assistant_fallback_to_rules", reason=str(error))
         return first, "rules", None
-    return plan_from_model(proposal, cat), "model", model
+    return plan_from_model(proposal, cat, earlier), "model", model
 
 
 def _config_body(plan: AssistantPlan, dataset: AnalysisDataset) -> dict[str, Any]:
@@ -69,15 +91,21 @@ def _config_body(plan: AssistantPlan, dataset: AnalysisDataset) -> dict[str, Any
         "measure": plan.measure,
         "filters": plan.filters,
     }
-    if plan.dimension:
-        body["dimension"] = plan.dimension
-    if plan.split:
-        body["split"] = plan.split
-    if plan.date_from:
-        body["from"] = plan.date_from
-    if plan.date_to:
-        body["to"] = plan.date_to
+    optional = {
+        "dimension": plan.dimension,
+        "split": plan.split,
+        "measureY": plan.measure_y,
+        "from": plan.date_from,
+        "to": plan.date_to,
+        "periodA": plan.period_a,
+        "periodB": plan.period_b,
+    }
+    body.update({key: value for key, value in optional.items() if value})
     return body
+
+
+def _sentences(text: str, count: int) -> str:
+    return ". ".join(text.split(". ")[:count]).rstrip(".") + "."
 
 
 def _answer(plan: AssistantPlan, dataset: AnalysisDataset, result: dict[str, Any]) -> str:
@@ -85,6 +113,11 @@ def _answer(plan: AssistantPlan, dataset: AnalysisDataset, result: dict[str, Any
     figures = {f["label"]: f for f in result.get("figures", [])}
     if result.get("empty"):
         return str(result["reading"])
+    if plan.method == "relationship":
+        return _sentences(str(result["reading"]), 1)
+    if plan.method == "explain":
+        # The total change, then the group that drove most of it.
+        return _sentences(str(result["reading"]), 2)
     if plan.method == "compare" and "Highest" in figures and "Lowest" in figures:
         top, bottom = figures["Highest"], figures["Lowest"]
         return f"{top['detail']} leads on {measure.label.lower()} at {top['value']}, with {bottom['detail']} lowest at {bottom['value']}."
@@ -120,6 +153,10 @@ def _explanation(plan: AssistantPlan, dataset: AnalysisDataset, result: dict[str
         else f"the column total {measure.label.lower()}"
     )
     parts = [f"I used {source} from {dataset.name}.", result.get("method", "")]
+    if plan.method == "relationship":
+        parts.append("Two measures moving together is not proof that one causes the other.")
+    if plan.follows_up:
+        parts.insert(0, "This follows on from your previous question.")
     if result.get("rowPolicy"):
         parts.append("Rows you are not permitted to see were excluded before anything was computed.")
     parts.append("Open the SQL to see exactly what ran, or take it further in Analyse.")
@@ -136,6 +173,7 @@ def turn_dict(q: AssistantQuery) -> dict[str, Any]:
         "refused": q.refused,
         "groundedIn": q.grounded_in or [],
         "planner": q.planner,
+        "followsUp": bool((q.plan or {}).get("followsUp")),
         "when": humanize(q.created_at),
     }
     if q.result_table:
@@ -145,7 +183,14 @@ def turn_dict(q: AssistantQuery) -> dict[str, Any]:
     return out
 
 
-async def ask(session: AsyncSession, actor: Actor, question: str, channel: str = "web") -> dict[str, Any]:
+async def ask(
+    session: AsyncSession,
+    actor: Actor,
+    question: str,
+    channel: str = "web",
+    context_id: str | None = None,
+) -> dict[str, Any]:
+    """Answer a question. `context_id` is the member's previous answer, which a follow-up builds on."""
     actor.require(Permission.ANALYSE)
     actor.require_verified()
     question = " ".join(question.split())
@@ -160,7 +205,7 @@ async def ask(session: AsyncSession, actor: Actor, question: str, channel: str =
             session, actor, "Suspected prompt injection", "assistant", None, "AI assistant", question[:500]
         )
 
-    planned, planner, model = await _plan(question, cat)
+    planned, planner, model = await _plan(question, cat, await _previous(session, actor, context_id))
     record = AssistantQuery(user_id=actor.member_id, question=question, planner=planner, channel=channel)
 
     if isinstance(planned, AssistantPlan):
@@ -179,22 +224,28 @@ async def ask(session: AsyncSession, actor: Actor, question: str, channel: str =
                     "No rows matched, so there is nothing to report. Try a wider period.",
                 )
             else:
-                measure = dataset.measures[planned.measure]
+                measures = [dataset.measures[planned.measure]]
+                if planned.method == "relationship":
+                    measures.append(dataset.measures[config.measure_y])
                 record.plan = planned.to_dict()
                 record.answer = _answer(planned, dataset, result)
                 record.explanation = _explanation(planned, dataset, result)
                 record.sql = result["sql"]
                 record.grounded_in = [
-                    f"Metric · {measure.label}" if measure.governed else f"Column · {measure.label}",
+                    f"Metric · {measures[0].label}"
+                    if measures[0].governed
+                    else f"Column · {measures[0].label}",
                     dataset.table,
+                    *[f"Metric · {m.label}" if m.governed else f"Column · {m.label}" for m in measures[1:]],
                     *(["Role row filters"] if result.get("rowPolicy") else []),
                 ]
                 record.result_table = result["table"]
                 record.build = {
-                    "method": "trend" if planned.method == "trend" else planned.method,
+                    "method": planned.method,
                     "dataset": dataset.id,
                     "measure": planned.measure,
                     **({"dimension": planned.dimension} if planned.dimension else {}),
+                    **({"measureY": config.measure_y} if planned.method == "relationship" else {}),
                 }
 
     if isinstance(planned, Refusal):

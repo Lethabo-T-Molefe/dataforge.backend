@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ....application import audit, integrations, search, slack
+from ....application import audit, inbox, integrations, search, slack
 from ....application.common import Actor
 from ....core.config import settings
 from ....core.errors import Unauthorized
@@ -17,9 +17,27 @@ from ....domain.roles import Permission
 from ....infrastructure import email as mail
 from ....infrastructure.notifications import verify_slack_signature
 from ..deps import current_actor, get_db, limiter
-from ..schemas import ContactIn, OpenSqlIn
+from ..schemas import ContactIn, NotificationsReadIn, OpenSqlIn
 
 router = APIRouter(tags=["Platform"])
+
+
+# ------------------------------------------------------------------ notifications
+
+
+@router.get("/notifications")
+async def notifications(
+    limit: int = 30, actor: Actor = Depends(current_actor), session: AsyncSession = Depends(get_db)
+) -> dict[str, Any]:
+    """The member's latest notifications, newest first, and how many are unread."""
+    return await inbox.list_for(session, actor, limit)
+
+
+@router.post("/notifications/read")
+async def read_notifications(
+    body: NotificationsReadIn, actor: Actor = Depends(current_actor), session: AsyncSession = Depends(get_db)
+) -> dict[str, Any]:
+    return await inbox.mark_read(session, actor, body.ids)
 
 
 # ------------------------------------------------------------------ audit

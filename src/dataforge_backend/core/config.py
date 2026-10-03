@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     LOGIN_LOCK_MINUTES: int = 15
     # Encrypts connector credentials and MFA secrets at rest. Falls back to a key derived from JWT_SECRET.
     SECRETS_KEY: str | None = None
+    # The refresh token travels only in an HttpOnly cookie scoped to the auth endpoints, so scripts in the
+    # page never see it. Use SAMESITE "none" (which needs a secure cookie) when the web app and the API are
+    # on different sites; SECURE defaults to on in production.
+    REFRESH_COOKIE_NAME: str = "df_refresh"
+    REFRESH_COOKIE_SAMESITE: Literal["lax", "strict", "none"] = "lax"
+    REFRESH_COOKIE_SECURE: bool | None = None
 
     # Email (verification). Without SMTP_HOST, emails are written to the log instead of sent.
     SMTP_HOST: str | None = None
@@ -56,18 +62,27 @@ class Settings(BaseSettings):
     CONTACT_EMAIL: str = "amina@dataforge.local"
     SMTP_STARTTLS: bool = True
 
-    # Ingestion
+    # Ingestion. Landed files are kept in STORAGE_DIR, or in Cloudinary when CLOUDINARY_URL is set
+    # (cloudinary://<api key>:<api secret>@<cloud name>, as shown in the Cloudinary console).
     STORAGE_DIR: Path = Path("var/landing")
     MAX_UPLOAD_MB: int = 250
+    CLOUDINARY_URL: str | None = None
+    CLOUDINARY_FOLDER: str = "dataforge"
+    # Encrypt files before they leave the API, so the file store only ever holds ciphertext.
+    STORAGE_ENCRYPT: bool = True
 
     # Sandbox execution
     SANDBOX_ROLE: str = "dataforge_sandbox"
     SANDBOX_STATEMENT_TIMEOUT_MS: int = 15_000
     SANDBOX_MAX_ROWS: int = 5_000
+    # Heavy Python work (parsing, profiling, full cleaning runs) runs in worker processes that are killed at
+    # their time limit. WORKERS is how many run at once; MEMORY_MB caps each one (enforced on Linux only).
+    SANDBOX_WORKERS: int = 2
+    SANDBOX_WORKER_MEMORY_MB: int = 4096
 
     # AI assistant. Without an API key the assistant uses its rule-based parser.
     ANTHROPIC_API_KEY: str | None = None
-    ASSISTANT_MODEL: str = "claude-opus-5"
+    ASSISTANT_MODEL: str = "claude-opus-5-5"
     ASSISTANT_USE_LLM: bool = True
     ASSISTANT_TIMEOUT_SECONDS: float = 30.0
 
@@ -81,7 +96,9 @@ class Settings(BaseSettings):
     # Integrations
     SLACK_SIGNING_SECRET: str | None = None
     SLACK_WEBHOOK_URL: str | None = None
+    # Unhandled errors go to Sentry when set. Request bodies and local variables are never sent.
     SENTRY_DSN: str | None = None
+    SENTRY_TRACES_SAMPLE_RATE: float = 0.0
     PUBLIC_API_URL: str = "http://localhost:8000"
 
     # Single sign-on into Superset and Jupyter. A separate secret, so neither service ever holds JWT_SECRET.
@@ -117,6 +134,10 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _check_production_safety(self) -> "Settings":
+        if self.REFRESH_COOKIE_SAMESITE == "none" and self.REFRESH_COOKIE_SECURE is False:
+            raise ValueError(
+                "REFRESH_COOKIE_SAMESITE=none needs a secure cookie; leave REFRESH_COOKIE_SECURE unset"
+            )
         if self.ENVIRONMENT == "production":
             if self.JWT_SECRET == _INSECURE_DEFAULT_SECRET or len(self.JWT_SECRET) < 32:
                 raise ValueError(
@@ -138,6 +159,12 @@ class Settings(BaseSettings):
                         f"{name} must be set to a random value of at least 24 characters in production"
                     )
         return self
+
+    @property
+    def refresh_cookie_secure(self) -> bool:
+        if self.REFRESH_COOKIE_SECURE is not None:
+            return self.REFRESH_COOKIE_SECURE
+        return self.ENVIRONMENT == "production" or self.REFRESH_COOKIE_SAMESITE == "none"
 
     @cached_property
     def sync_database_url(self) -> str:

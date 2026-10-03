@@ -23,7 +23,7 @@ from ..domain.monitoring import (
 from ..domain.roles import Permission
 from ..infrastructure import notifications
 from ..infrastructure.db.models import Alert, Monitor, User
-from . import analysis, audit, catalogue
+from . import analysis, audit, catalogue, inbox
 from .common import SYSTEM, Actor, humanize
 
 log = get_logger(__name__)
@@ -56,6 +56,7 @@ def monitor_dict(monitor: Monitor, dataset: AnalysisDataset | None) -> dict[str,
         "filters": monitor.filters,
         "rule": monitor.rule,
         "notifySlack": monitor.notify_slack,
+        "notifyEmail": monitor.notify_email,
         "available": dataset is not None,
     }
 
@@ -140,6 +141,7 @@ async def create(session: AsyncSession, actor: Actor, body: dict[str, Any]) -> d
         owner_id=actor.id,
         owner_label=actor.name,
         notify_slack=bool(body.get("notifySlack", False)),
+        notify_email=bool(body.get("notifyEmail", True)),
     )
     session.add(monitor)
     await session.flush()
@@ -190,6 +192,8 @@ async def update(
         monitor.name = str(body["name"]).strip()[:200]
     if "notifySlack" in body:
         monitor.notify_slack = bool(body["notifySlack"])
+    if "notifyEmail" in body:
+        monitor.notify_email = bool(body["notifyEmail"])
     await audit.record(session, actor, "Changed monitor", "monitor", monitor.id, monitor.name, monitor.status)
     await session.commit()
     return monitor_dict(monitor, dataset)
@@ -337,17 +341,35 @@ async def evaluate_monitor(session: AsyncSession, monitor: Monitor) -> dict[str,
                 },
             )
             session.add(alert)
+            await session.flush()
             await audit.record(
                 session, SYSTEM, "Raised alert", "monitor", monitor.id, alert.metric, result.message
+            )
+            inbox.notify(
+                session,
+                [monitor.owner_id],
+                "alert",
+                f"Alert: {alert.metric}",
+                result.message,
+                f"/monitors/{alert.id}",
             )
             alert_out = alert
     monitor.last_month = result.month
     await session.commit()
-    if alert_out is not None and monitor.notify_slack:
+    if alert_out is not None:
         lines = "\n".join(
             f"• {c['factor']}: {c['contribution']} ({c['detail']})" for c in alert_out.root_cause
         )
-        await notifications.post_slack(f"*{alert_out.metric}*: {alert_out.message}\n{lines}")
+        if monitor.notify_slack:
+            await notifications.post_slack(f"*{alert_out.metric}*: {alert_out.message}\n{lines}")
+        if monitor.notify_email:
+            await inbox.email(
+                session,
+                monitor.owner_id,
+                f"DataForge alert: {alert_out.metric}"[:150],
+                f"{alert_out.message}\n\nWhat drove it:\n{lines.replace('• ', '- ') or '- No breakdown available'}",
+                f"/monitors/{alert_out.id}",
+            )
     return {
         "monitorId": monitor.id,
         "triggered": result.triggered,

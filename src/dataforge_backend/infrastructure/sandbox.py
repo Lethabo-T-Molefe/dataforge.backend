@@ -1,8 +1,8 @@
 """The sandbox for SQL: a read-only transaction under a least-privilege role, with a time and row cap.
 
 Every run is recorded as a sandbox session with its caps and outcome, and its duration counts towards the
-member's compute quota. Python work (cleaning, profiling, scoring) runs in a worker thread with a wall-clock
-cap through `run_python`.
+member's compute quota. Python work goes through `run_python`: whole-dataset work (parsing, profiling, full
+cleaning runs) in a worker process that is killed at its cap, previews on a sample in a worker thread.
 """
 
 import asyncio
@@ -21,6 +21,7 @@ from ..core.security import utcnow
 from ..domain.analysis.sql import ident
 from .db.models import SandboxSession, new_id
 from .warehouse import jsonable
+from .workers import pool as workers
 
 T = TypeVar("T")
 
@@ -133,25 +134,36 @@ class Sandbox:
 
     async def run_python(
         self,
-        fn: Callable[[], T],
-        *,
+        fn: Callable[..., T],
+        *args: Any,
         user_id: str | None,
         kind: str,
         description: str,
         timeout_s: float = 300.0,
+        isolated: bool = False,
     ) -> tuple[T, int]:
-        """Run CPU-bound Python (pandas, scikit-learn) off the event loop with a wall-clock cap."""
+        """Run CPU-bound Python (pandas, scikit-learn) off the event loop with a wall-clock cap.
+
+        Work on a whole dataset is `isolated`: it runs in a worker process that is killed at the cap, and
+        `fn` and its arguments must be picklable. Short work on a sample stays in a worker thread.
+        """
+        caps: dict[str, Any] = {"timeoutS": timeout_s, "isolation": "worker-thread"}
+        if isolated:
+            caps = {"timeoutS": timeout_s, "isolation": "worker-process", "memoryMb": workers.memory_mb}
         record = SandboxSession(
             id=new_id(),
             user_id=user_id,
             kind=kind,
-            caps={"timeoutS": timeout_s, "isolation": "worker-thread"},
+            caps=caps,
             statement=description,
             started_at=utcnow(),
         )
         started = time.perf_counter()
         try:
-            value = await asyncio.wait_for(asyncio.to_thread(fn), timeout=timeout_s)
+            if isolated:
+                value: T = await workers.run(fn, args, timeout_s)
+            else:
+                value = await asyncio.wait_for(asyncio.to_thread(fn, *args), timeout=timeout_s)
         except TimeoutError as error:
             record.status, record.error = "timeout", "wall-clock cap reached"
             record.duration_ms = int((time.perf_counter() - started) * 1000)

@@ -1,38 +1,199 @@
-"""The landing zone: uploaded files are stored per dataset and version, then parsed into raw text frames."""
+"""The landing zone: uploaded files are kept per dataset and version, then parsed into raw text frames.
 
+Files are kept on local disk, or in Cloudinary when CLOUDINARY_URL is set. In Cloudinary they are raw,
+authenticated assets (never reachable by a public URL), and they are encrypted before they leave the API
+unless STORAGE_ENCRYPT is off, so the file store only holds ciphertext.
+"""
+
+import asyncio
 import csv
 import hashlib
 import io
 import json
+import shutil
+from functools import lru_cache
 from pathlib import Path
+from typing import Any, Protocol
+from urllib.parse import unquote, urlparse
 
+import cloudinary
+import cloudinary.api
+import cloudinary.exceptions
+import cloudinary.uploader
+import cloudinary.utils
+import httpx
 import pandas as pd
 
 from ..core.config import settings
-from ..core.errors import ValidationFailed
+from ..core.crypto import decrypt_bytes, encrypt_bytes
+from ..core.errors import Unavailable, ValidationFailed
+from ..core.logging import get_logger
+
+log = get_logger(__name__)
 
 SUPPORTED = (".csv", ".tsv", ".txt", ".xlsx", ".xls", ".json", ".jsonl")
+# Folder names under the landing zone that a dataset id must never be mistaken for.
+_RESERVED = ("datasets", "connectors")
+# Cloudinary takes up to 100 MB in one request; larger files go up in chunks.
+_SINGLE_REQUEST_BYTES = 20_000_000
 
 
-def landing_path(dataset_id: str, version: int, filename: str) -> Path:
-    safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in Path(filename).name) or "upload"
-    folder = settings.STORAGE_DIR / dataset_id / f"v{version}"
-    folder.mkdir(parents=True, exist_ok=True)
-    return folder / safe
+# ------------------------------------------------------------------ file stores
 
 
-def store(dataset_id: str, version: int, filename: str, content: bytes) -> tuple[Path, str]:
-    path = landing_path(dataset_id, version, filename)
-    path.write_bytes(content)
-    return path, hashlib.sha256(content).hexdigest()
+class FileStore(Protocol):
+    name: str
+
+    def put(self, key: str, content: bytes) -> str: ...
+
+    def get(self, key: str) -> bytes: ...
+
+    def delete(self, key: str) -> None: ...
+
+    def delete_prefix(self, prefix: str) -> None: ...
 
 
-def remove_dataset_files(dataset_id: str) -> None:
-    folder = settings.STORAGE_DIR / dataset_id
-    if folder.exists():
-        for item in sorted(folder.rglob("*"), reverse=True):
-            item.unlink() if item.is_file() else item.rmdir()
-        folder.rmdir()
+class LocalStore:
+    name = "local"
+
+    def put(self, key: str, content: bytes) -> str:
+        path = settings.STORAGE_DIR / key
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        return str(path)
+
+    def get(self, key: str) -> bytes:
+        return (settings.STORAGE_DIR / key).read_bytes()
+
+    def delete(self, key: str) -> None:
+        (settings.STORAGE_DIR / key).unlink(missing_ok=True)
+
+    def delete_prefix(self, prefix: str) -> None:
+        folder = settings.STORAGE_DIR / prefix
+        if folder.is_dir():
+            shutil.rmtree(folder)
+
+
+class CloudinaryStore:
+    """Raw, authenticated assets under one folder. Every call is a blocking HTTP request."""
+
+    name = "cloudinary"
+    _asset: dict[str, Any] = {"resource_type": "raw", "type": "authenticated"}
+
+    def __init__(self, url: str, folder: str, encrypt: bool) -> None:
+        parsed = urlparse(url)
+        if parsed.scheme != "cloudinary" or not (parsed.username and parsed.password and parsed.hostname):
+            raise ValueError("CLOUDINARY_URL must look like cloudinary://<api key>:<api secret>@<cloud name>")
+        cloudinary.config(
+            cloud_name=parsed.hostname,
+            api_key=unquote(parsed.username),
+            api_secret=unquote(parsed.password),
+            secure=True,
+        )
+        self.folder = folder.strip("/")
+        self.encrypt = encrypt
+
+    def _public_id(self, key: str) -> str:
+        return f"{self.folder}/{key}" if self.folder else key
+
+    def put(self, key: str, content: bytes) -> str:
+        public_id = self._public_id(key)
+        body = encrypt_bytes(content) if self.encrypt else content
+        options = {"public_id": public_id, "overwrite": True, "invalidate": True, **self._asset}
+        try:
+            if len(body) <= _SINGLE_REQUEST_BYTES:
+                cloudinary.uploader.upload(io.BytesIO(body), **options)
+            else:
+                cloudinary.uploader.upload_large(io.BytesIO(body), filename=Path(key).name, **options)
+        except cloudinary.exceptions.Error as error:
+            log.warning("file_store_put_failed", key=key, error=str(error))
+            raise Unavailable(f"The file store did not accept the file: {str(error)[:200]}") from error
+        return f"cloudinary:{public_id}"
+
+    def get(self, key: str) -> bytes:
+        url, _ = cloudinary.utils.cloudinary_url(self._public_id(key), sign_url=True, **self._asset)
+        try:
+            response = httpx.get(url, timeout=120, follow_redirects=True)
+        except httpx.HTTPError as error:
+            raise Unavailable("The file store could not be reached.") from error
+        if response.status_code == 404:
+            raise FileNotFoundError(key)
+        if response.status_code >= 300:
+            raise Unavailable(f"The file store refused to return the file (status {response.status_code}).")
+        return decrypt_bytes(response.content)
+
+    def delete(self, key: str) -> None:
+        try:
+            cloudinary.uploader.destroy(self._public_id(key), invalidate=True, **self._asset)
+        except cloudinary.exceptions.Error as error:
+            raise Unavailable(f"The file store could not remove the file: {str(error)[:200]}") from error
+
+    def delete_prefix(self, prefix: str) -> None:
+        cursor: str | None = None
+        try:
+            # Each call removes up to 1 000 assets and says whether more remain.
+            for _ in range(100):
+                result = cloudinary.api.delete_resources_by_prefix(
+                    f"{self._public_id(prefix)}/", invalidate=True, next_cursor=cursor, **self._asset
+                )
+                cursor = result.get("next_cursor")
+                if not cursor:
+                    return
+        except cloudinary.exceptions.Error as error:
+            raise Unavailable(f"The file store could not remove the files: {str(error)[:200]}") from error
+        raise Unavailable("The file store still holds files for this item. Try again.")
+
+
+@lru_cache(maxsize=1)
+def file_store() -> FileStore:
+    if settings.CLOUDINARY_URL:
+        return CloudinaryStore(settings.CLOUDINARY_URL, settings.CLOUDINARY_FOLDER, settings.STORAGE_ENCRYPT)
+    return LocalStore()
+
+
+def _safe_name(filename: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in Path(filename).name) or "upload"
+
+
+def _put(key: str, content: bytes) -> tuple[str, str]:
+    return file_store().put(key, content), hashlib.sha256(content).hexdigest()
+
+
+async def store(dataset_id: str, version: int, filename: str, content: bytes) -> tuple[str, str]:
+    """Keep an uploaded file exactly as it arrived. Returns where it is kept and its SHA-256."""
+    key = f"datasets/{dataset_id}/v{version}/{_safe_name(filename)}"
+    return await asyncio.to_thread(_put, key, content)
+
+
+async def store_workbook(connector_id: str, content: bytes) -> str:
+    """Keep a spreadsheet connector's workbook. The key is new for every upload, so a copy is never stale."""
+    key = f"connectors/{connector_id}/{hashlib.sha256(content).hexdigest()[:16]}.xlsx"
+    await asyncio.to_thread(file_store().put, key, content)
+    return key
+
+
+async def read(key: str) -> bytes:
+    """Raise FileNotFoundError when nothing is kept under the key."""
+    return await asyncio.to_thread(file_store().get, key)
+
+
+async def remove(key: str) -> None:
+    await asyncio.to_thread(file_store().delete, key)
+
+
+async def remove_dataset_files(dataset_id: str) -> None:
+    store_ = file_store()
+    await asyncio.to_thread(store_.delete_prefix, f"datasets/{dataset_id}")
+    # Files landed before the datasets/ folder existed sat directly under the dataset's id.
+    if store_.name == "local" and dataset_id not in _RESERVED:
+        await asyncio.to_thread(store_.delete_prefix, dataset_id)
+
+
+async def remove_connector_files(connector_id: str) -> None:
+    await asyncio.to_thread(file_store().delete_prefix, f"connectors/{connector_id}")
+
+
+# ------------------------------------------------------------------ parsing
 
 
 def _decode(content: bytes) -> str:
@@ -87,3 +248,8 @@ def parse_upload(filename: str, content: bytes) -> pd.DataFrame:
     frame = frame.dropna(how="all")
     frame.columns = [str(c).strip() or f"column_{i + 1}" for i, c in enumerate(frame.columns)]
     return frame
+
+
+def read_sheet(content: bytes, sheet: str) -> pd.DataFrame:
+    """One sheet of a workbook as object columns."""
+    return pd.read_excel(io.BytesIO(content), sheet_name=sheet, dtype=object)

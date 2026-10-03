@@ -4,6 +4,7 @@ dataforge migrate                 apply database migrations
 dataforge seed-demo               create the demo organisation through the real pipeline
 dataforge create-admin            create or promote an administrator
 dataforge evaluate-monitors       evaluate due monitors once (for cron, instead of the in-process scheduler)
+dataforge refresh-connectors      refresh connectors whose schedule is due, once (for cron)
 dataforge superset-sync           register approved datasets, metrics and row policies in Superset
 dataforge serve                   run the API
 """
@@ -123,6 +124,29 @@ def evaluate_monitors() -> None:
 
     for result in _run(go()):
         typer.echo(f"{result['monitorId']}: {'ALERT ' if result['triggered'] else ''}{result['message']}")
+
+
+@app.command("refresh-connectors")
+def refresh_connectors() -> None:
+    """Refresh every connector whose schedule is due, once (for cron, instead of the in-process scheduler)."""
+
+    async def go() -> list[dict[str, Any]]:
+        from .application import refresh
+        from .core.database import SessionLocal, engine
+        from .infrastructure.workers import pool
+
+        try:
+            async with SessionLocal() as session:
+                return await refresh.refresh_due(session)
+        finally:
+            pool.shutdown()
+            await engine.dispose()
+
+    for result in _run(go()):
+        for outcome in result["datasets"]:
+            typer.echo(
+                f"{result['connectorId']} / {outcome['name']}: {outcome['status']} - {outcome['detail']}"
+            )
 
 
 @app.command("superset-sync")

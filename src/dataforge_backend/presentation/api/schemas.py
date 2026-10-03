@@ -69,7 +69,9 @@ class TokenIn(Body):
 
 
 class RefreshIn(Body):
-    refresh_token: str = Field(min_length=10, max_length=400)
+    # Browsers send the token in its HttpOnly cookie. A body token is accepted from other clients, and
+    # once from a browser that still holds one from before the cookie existed.
+    refresh_token: str | None = Field(default=None, min_length=10, max_length=400)
 
 
 class LogoutIn(Body):
@@ -218,6 +220,7 @@ class CellIn(Body):
 
 class AskIn(Body):
     question: str = Field(min_length=1, max_length=2000)
+    context_id: str | None = Field(default=None, max_length=32)
 
 
 # ------------------------------------------------------------------ dashboards, monitors, predictions, connectors
@@ -251,6 +254,15 @@ class EmbedIn(Body):
 class ScoreIn(Body):
     model_id: str | None = None
     cohort: dict[str, str] = Field(default_factory=dict)
+
+
+class ConnectorRefreshIn(Body):
+    refresh_cadence: Literal["hourly", "daily", "weekly"] | None = None
+
+
+class NotificationsReadIn(Body):
+    # Leave out to mark every notification read.
+    ids: list[str] | None = Field(default=None, max_length=200)
 
 
 class ConnectorIn(Body):

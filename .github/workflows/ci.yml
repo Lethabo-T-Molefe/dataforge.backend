@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Lint, types and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: dataforge
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      # The tests create and rebuild dataforge_test next to this database.
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/dataforge
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install
+        run: uv sync --frozen
+
+      - name: Ruff
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Mypy
+        run: uv run mypy src
+
+      - name: Tests
+        run: uv run pytest -q
+
+  image:
+    name: Docker images build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: API image
+        run: docker build -t dataforge-api .
+      - name: Superset image
+        run: docker build -t dataforge-superset integrations/superset
+      - name: Jupyter image
+        run: docker build -t dataforge-jupyter integrations/jupyter

@@ -1,12 +1,12 @@
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ....application import identity, slack
 from ....application.common import Actor
 from ....core.config import settings
-from ....core.errors import NotFound
+from ....core.errors import NotFound, Unauthorized
 from ....infrastructure.db.models import User
 from ..deps import client_ip, current_actor, data_actor, get_db, limiter, optional_actor
 from ..schemas import (
@@ -25,10 +25,31 @@ from ..schemas import (
 )
 
 router = APIRouter(prefix="/auth", tags=["Identity"])
+_COOKIE_PATH = f"{settings.API_PREFIX}/auth"
 
 
 def _agent(request: Request) -> str | None:
     return request.headers.get("User-Agent")
+
+
+def _hand_over(response: Response, result: dict[str, Any]) -> dict[str, Any]:
+    """Move a new session's refresh token out of the body and into an HttpOnly cookie."""
+    token = result.pop("refreshToken", None)
+    if token:
+        response.set_cookie(
+            settings.REFRESH_COOKIE_NAME,
+            token,
+            max_age=settings.REFRESH_TOKEN_DAYS * 86_400,
+            path=_COOKIE_PATH,
+            httponly=True,
+            secure=settings.refresh_cookie_secure,
+            samesite=settings.REFRESH_COOKIE_SAMESITE,
+        )
+    return result
+
+
+def _presented(request: Request, body_token: str | None) -> str | None:
+    return request.cookies.get(settings.REFRESH_COOKIE_NAME) or body_token
 
 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
@@ -61,34 +82,62 @@ async def resend_verification(
 
 @router.post("/login")
 @limiter.limit("10/minute")
-async def login(request: Request, body: LoginIn, session: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    """Password sign-in. With MFA on, returns a challenge token for /auth/mfa instead of a session."""
-    return await identity.login(session, str(body.email), body.password, client_ip(request), _agent(request))
+async def login(
+    request: Request, response: Response, body: LoginIn, session: AsyncSession = Depends(get_db)
+) -> dict[str, Any]:
+    """Password sign-in. With MFA on, returns a challenge token for /auth/mfa instead of a session.
+
+    A session is the access token in the body and the refresh token in an HttpOnly cookie.
+    """
+    result = await identity.login(
+        session, str(body.email), body.password, client_ip(request), _agent(request)
+    )
+    return _hand_over(response, result)
 
 
 @router.post("/mfa")
 @limiter.limit("10/minute")
 async def complete_mfa(
-    request: Request, body: MfaIn, session: AsyncSession = Depends(get_db)
+    request: Request, response: Response, body: MfaIn, session: AsyncSession = Depends(get_db)
 ) -> dict[str, Any]:
-    return await identity.complete_mfa(
+    result = await identity.complete_mfa(
         session, body.challenge_token, body.code, client_ip(request), _agent(request)
     )
+    return _hand_over(response, result)
 
 
 @router.post("/refresh")
 @limiter.limit("30/minute")
 async def refresh(
-    request: Request, body: RefreshIn, session: AsyncSession = Depends(get_db)
+    request: Request,
+    response: Response,
+    body: RefreshIn | None = None,
+    session: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    return await identity.refresh(session, body.refresh_token, client_ip(request), _agent(request))
+    """A new access token. The refresh token in the cookie is rotated; reusing an old one ends the session."""
+    token = _presented(request, body.refresh_token if body else None)
+    if not token:
+        raise Unauthorized("Sign in again.")
+    result = await identity.refresh(session, token, client_ip(request), _agent(request))
+    return _hand_over(response, result)
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
 async def logout(
-    body: LogoutIn, actor: Actor | None = Depends(optional_actor), session: AsyncSession = Depends(get_db)
+    request: Request,
+    response: Response,
+    body: LogoutIn | None = None,
+    actor: Actor | None = Depends(optional_actor),
+    session: AsyncSession = Depends(get_db),
 ) -> None:
-    await identity.logout(session, body.refresh_token, actor)
+    await identity.logout(session, _presented(request, body.refresh_token if body else None), actor)
+    response.delete_cookie(
+        settings.REFRESH_COOKIE_NAME,
+        path=_COOKIE_PATH,
+        httponly=True,
+        secure=settings.refresh_cookie_secure,
+        samesite=settings.REFRESH_COOKIE_SAMESITE,
+    )
 
 
 @router.get("/me")
@@ -152,9 +201,12 @@ async def demo_available() -> dict[str, bool]:
 
 @router.post("/demo")
 @limiter.limit("30/minute")
-async def demo(request: Request, body: DemoIn, session: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+async def demo(
+    request: Request, response: Response, body: DemoIn, session: AsyncSession = Depends(get_db)
+) -> dict[str, Any]:
     """Prototype only: sign in as the seeded member for a role. Off unless DEMO_MODE is set."""
-    return await identity.demo_sign_in(session, body.role, client_ip(request), _agent(request))
+    result = await identity.demo_sign_in(session, body.role, client_ip(request), _agent(request))
+    return _hand_over(response, result)
 
 
 @router.post("/slack-link")

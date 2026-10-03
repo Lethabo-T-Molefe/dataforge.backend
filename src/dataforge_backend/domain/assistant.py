@@ -4,10 +4,14 @@ The planner never writes SQL. It chooses a dataset, a measure, a method, a group
 from the fields the member is permitted to read; the analysis engine then composes the SQL. A language
 model can propose the plan (see `plan_schema`), but its proposal is validated here exactly like the
 rule-based one, so a prompt cannot reach data or fields outside the member's catalogue.
+
+A question can follow up the member's previous answer ("what about Gauteng?", "and by course?"): it keeps
+what the previous plan chose and changes only what the new question names.
 """
 
+import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from .analysis.model import MONTH_DIMENSION, AnalysisDataset
@@ -28,7 +32,8 @@ _PERSONAL = re.compile(
     re.IGNORECASE,
 )
 _PREDICT = re.compile(
-    r"\b(likely|likelihood|predict\w*|forecast\w*|probabilit\w*|risk\s+of|at\s+risk|will\s+\w+\s+(drop|leave|churn|complete|fail))\b",
+    r"\b(likely|likelihood|predict\w*|forecast\w*|probabilit\w*|risk\s+of|at\s+risk|next\s+(week|month|quarter|year)|"
+    r"will\s+(\w+\s+){1,4}(drop|fall|rise|grow|increase|decrease|leave|churn|complete|fail))\b",
     re.IGNORECASE,
 )
 _RELATIONSHIP = re.compile(
@@ -40,6 +45,11 @@ _EXPLAIN = re.compile(
 _TREND = re.compile(
     r"\b(trend\w*|over\s+time|chang(e|ed|es|ing)|month\s+by\s+month|monthly|since|growth|grow\w*|grew|rise|rose|risen|"
     r"fall|fell|fallen|increas\w*|decreas\w*|moved|movement|progress\w*)\b",
+    re.IGNORECASE,
+)
+# Words that open a follow-up to the previous answer rather than a new question.
+_FOLLOW_UP = re.compile(
+    r"^(and|but|now|then|also|only|just|what\s+about|how\s+about|same\s+for)\b|\binstead\b|\bthe\s+same\b",
     re.IGNORECASE,
 )
 _MONTH_WORDS = {
@@ -77,7 +87,7 @@ REFUSAL_REASONS = ("personal", "prediction", "relationship", "explain", "ungroun
 class AssistantPlan:
     dataset_id: str
     measure: str
-    method: str  # summarise | compare | trend
+    method: str  # compare | trend | relationship | explain
     dimension: str | None = None
     split: str | None = None
     filters: dict[str, str] = field(default_factory=dict)
@@ -85,6 +95,10 @@ class AssistantPlan:
     date_to: str | None = None
     figure: bool = False  # a single figure: the latest month against the one before
     source: str = "rules"  # rules | model
+    measure_y: str | None = None  # relationship: the second measure (None lets the engine pick a partner)
+    period_a: str | None = None  # explain: the two months whose difference is split into contributions
+    period_b: str | None = None
+    follows_up: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -98,7 +112,33 @@ class AssistantPlan:
             "to": self.date_to,
             "figure": self.figure,
             "source": self.source,
+            "measureY": self.measure_y,
+            "periodA": self.period_a,
+            "periodB": self.period_b,
+            "followsUp": self.follows_up,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "AssistantPlan | None":
+        """A stored plan, or None when it is not one (older records lack the newer keys, which is fine)."""
+        try:
+            return cls(
+                dataset_id=str(data["datasetId"]),
+                measure=str(data["measure"]),
+                method=str(data["method"]),
+                dimension=data.get("dimension"),
+                split=data.get("split"),
+                filters={str(k): str(v) for k, v in (data.get("filters") or {}).items()},
+                date_from=data.get("from"),
+                date_to=data.get("to"),
+                figure=bool(data.get("figure")),
+                source=str(data.get("source") or "rules"),
+                measure_y=data.get("measureY"),
+                period_a=data.get("periodA"),
+                period_b=data.get("periodB"),
+            )
+        except (KeyError, TypeError, AttributeError):
+            return None
 
 
 @dataclass(frozen=True)
@@ -129,14 +169,15 @@ def refusal(reason: str, catalogue: "Catalogue | None" = None) -> Refusal:
     if reason == "relationship":
         return Refusal(
             reason,
-            "The assistant answers with shared metrics. Correlations are built in Analyse or written in SQL.",
-            "Open Analyse, choose Test a relationship, and pick the two measures.",
+            "I could not find two measures from the same dataset to test against each other.",
+            "Name both, or open Analyse, choose Test a relationship, and pick the two measures.",
         )
     if reason == "explain":
         return Refusal(
             reason,
-            "Root causes are computed as contributions in Analyse, or explained on an alert in Monitors.",
-            "Open Analyse and choose Explain a change, or open the alert in Monitors for its root cause.",
+            "I can explain a change in a total, such as revenue or enrolments, by splitting it into each group's "
+            "contribution. That question is about a rate or a dataset without months, so there is no total to split.",
+            "Ask why a total changed, or open the alert in Monitors for its root cause.",
         )
     if reason == "injection":
         return Refusal(
@@ -268,6 +309,14 @@ def _period(text: str, dataset: AnalysisDataset) -> tuple[str | None, str | None
     if re.search(r"\b(this|the\s+current)\s+year\b|\byear\s+to\s+date\b|\bytd\b", text):
         year = latest[:4]
         return next(m for m in months if m.startswith(year)), latest, False
+    match = re.search(
+        r"\b(?:between|from)\s+([a-z]+)(?:\s+(\d{4}))?\s+(?:and|to)\s+([a-z]+)(?:\s+(\d{4}))?", text
+    )
+    if match and match.group(1) in _MONTH_WORDS and match.group(3) in _MONTH_WORDS:
+        low = _resolve_month(match.group(1), match.group(2), months)
+        high = _resolve_month(match.group(3), match.group(4), months)
+        if low and high:
+            return (low, high, False) if low <= high else (high, low, False)
     match = re.search(r"\bsince\s+([a-z]+)(?:\s+(\d{4}))?", text)
     if match and match.group(1) in _MONTH_WORDS:
         month = _resolve_month(match.group(1), match.group(2), months)
@@ -287,8 +336,207 @@ def _resolve_month(word: str, year: str | None, months: list[str]) -> str | None
     return candidates[-1] if candidates else None
 
 
-def plan_question(question: str, catalogue: Catalogue) -> AssistantPlan | Refusal:
-    """Rule-based planning. Deterministic, so it is also the fallback when no language model is configured."""
+def _mentioned_measures(text: str, dataset: AnalysisDataset, catalogue: Catalogue) -> list[str]:
+    """The dataset's measures the question names, in the order it names them.
+
+    Where two phrases overlap ("completion rate" and "completion"), the longer one wins.
+    """
+    spans: list[tuple[int, int, bool, str]] = []
+    for entry in catalogue.entries:
+        if entry.dataset.id != dataset.id:
+            continue
+        for phrase in entry.phrases:
+            words = [re.escape(w) for w in phrase.split()]
+            if not words:
+                continue
+            pattern = r"\b" + r"\s+".join(words) + r"(s|es|'s)?\b"
+            spans += [(m.start(), m.end(), entry.governed, entry.measure) for m in re.finditer(pattern, text)]
+    kept: list[tuple[int, int, bool, str]] = []
+    for span in sorted(spans, key=lambda s: (-(s[1] - s[0]), not s[2], s[0])):
+        if not any(span[0] < k[1] and k[0] < span[1] for k in kept):
+            kept.append(span)
+    return list(dict.fromkeys(s[3] for s in sorted(kept)))
+
+
+@dataclass(frozen=True)
+class _Asked:
+    """What a question asks for, read from its words against one dataset."""
+
+    dimension: str | None
+    filters: dict[str, str]
+    date_from: str | None
+    date_to: str | None
+    single: bool
+    trend: bool
+    relationship: bool
+    explain: bool
+
+    @property
+    def names_anything(self) -> bool:
+        return bool(
+            self.dimension
+            or self.filters
+            or self.date_from
+            or self.trend
+            or self.relationship
+            or self.explain
+        )
+
+
+def _read(text: str, dataset: AnalysisDataset) -> _Asked:
+    date_from, date_to, single = _period(text, dataset)
+    return _Asked(
+        dimension=_match_dimension(text, dataset),
+        filters=_match_filters(text, dataset),
+        date_from=date_from,
+        date_to=date_to,
+        single=single,
+        trend=bool(_TREND.search(text)) and dataset.has_time,
+        relationship=bool(_RELATIONSHIP.search(text)),
+        explain=bool(_EXPLAIN.search(text)),
+    )
+
+
+def _explain_plan(
+    dataset: AnalysisDataset,
+    measure: str,
+    asked: _Asked,
+    catalogue: Catalogue,
+    periods: tuple[str | None, str | None] = (None, None),
+) -> AssistantPlan | Refusal:
+    """Split a change in a total between two months into each group's contribution."""
+    if not dataset.has_time or not dataset.measures[measure].additive:
+        return refusal("explain", catalogue)
+    months = list(dataset.months)
+    if asked.date_from and asked.date_to and asked.date_from != asked.date_to:
+        a, b = asked.date_from, asked.date_to
+    elif asked.date_to or not periods[1]:
+        end = asked.date_to or months[-1]
+        index = months.index(end) if end in months else len(months) - 1
+        a, b = months[max(0, index - 1)], months[index]
+    else:
+        a, b = periods[0] or months[0], periods[1]
+    if a == b:
+        return refusal("explain", catalogue)
+    groupable = [d for d in dataset.dimensions if d not in asked.filters]
+    dimension = asked.dimension if asked.dimension in groupable else next(iter(groupable), None)
+    if dimension is None:
+        return refusal("explain", catalogue)
+    return AssistantPlan(
+        dataset.id, measure, "explain", dimension, None, asked.filters, None, None, period_a=a, period_b=b
+    )
+
+
+def _compose(
+    dataset: AnalysisDataset,
+    measure: str,
+    asked: _Asked,
+    catalogue: Catalogue,
+    *,
+    measure_y: str | None = None,
+    split: str | None = None,
+    periods: tuple[str | None, str | None] = (None, None),
+) -> AssistantPlan | Refusal:
+    """The plan for a question once its dataset and measure are known."""
+    if asked.relationship:
+        y = measure_y if measure_y != measure else None
+        return AssistantPlan(
+            dataset.id,
+            measure,
+            "relationship",
+            None,
+            None,
+            asked.filters,
+            asked.date_from,
+            asked.date_to,
+            measure_y=y,
+        )
+    if asked.explain:
+        return _explain_plan(dataset, measure, asked, catalogue, periods)
+    dimension, filters = asked.dimension, asked.filters
+    if dimension == MONTH_DIMENSION or (asked.trend and not asked.single):
+        lines = dimension if dimension not in (None, MONTH_DIMENSION) else split
+        lines = lines if lines not in filters else None
+        return AssistantPlan(
+            dataset.id, measure, "trend", None, lines, filters, asked.date_from, asked.date_to
+        )
+    if dimension and dimension not in filters:
+        return AssistantPlan(
+            dataset.id, measure, "compare", dimension, None, filters, asked.date_from, asked.date_to
+        )
+    if dataset.has_time:
+        # A single figure: the chosen month (or the latest) against the month before it.
+        months = list(dataset.months)
+        end = asked.date_to or months[-1]
+        index = months.index(end) if end in months else len(months) - 1
+        start = months[max(0, index - 1)]
+        return AssistantPlan(dataset.id, measure, "trend", None, None, filters, start, end, figure=True)
+    first_dim = next((d for d in dataset.dimensions if d not in filters), None)
+    if first_dim is None:
+        return refusal("ungrounded", catalogue)
+    return AssistantPlan(dataset.id, measure, "compare", first_dim, None, filters, None, None)
+
+
+def _continue(
+    dataset: AnalysisDataset,
+    measure: str,
+    asked: _Asked,
+    previous: AssistantPlan,
+    catalogue: Catalogue,
+) -> AssistantPlan | Refusal:
+    """A follow-up: keep what the previous plan chose and change only what the new question names."""
+    if measure not in dataset.measures:
+        return refusal("ungrounded", catalogue)
+    filters = {**previous.filters, **asked.filters}
+    if asked.date_from:
+        date_from, date_to = asked.date_from, asked.date_to
+    elif previous.figure:
+        # A figure's two months were derived from its end month; carry the end month only.
+        date_from, date_to = None, previous.date_to
+    else:
+        date_from, date_to = previous.date_from, previous.date_to
+    named_method = asked.relationship or asked.explain or asked.trend or asked.dimension == MONTH_DIMENSION
+    dimension = asked.dimension
+    if not named_method and dimension is None and previous.method == "compare":
+        dimension = previous.dimension
+    merged = replace(
+        asked,
+        dimension=dimension,
+        filters=filters,
+        date_from=date_from,
+        date_to=date_to,
+        relationship=asked.relationship or (not named_method and previous.method == "relationship"),
+        explain=asked.explain or (not named_method and previous.method == "explain"),
+        trend=asked.trend
+        or (
+            not named_method
+            and asked.dimension is None
+            and previous.method == "trend"
+            and not previous.figure
+        ),
+    )
+    if merged.explain and previous.method == "explain" and dimension is None:
+        merged = replace(merged, dimension=previous.dimension)
+    planned = _compose(
+        dataset,
+        measure,
+        merged,
+        catalogue,
+        measure_y=previous.measure_y if measure == previous.measure else previous.measure,
+        # "How has it changed?" after a comparison by region draws one line per region.
+        split=previous.split or (previous.dimension if previous.method == "compare" else None),
+        periods=(previous.period_a, previous.period_b) if not asked.date_from else (None, None),
+    )
+    return replace(planned, follows_up=True) if isinstance(planned, AssistantPlan) else planned
+
+
+def plan_question(
+    question: str, catalogue: Catalogue, previous: AssistantPlan | None = None
+) -> AssistantPlan | Refusal:
+    """Rule-based planning. Deterministic, so it is also the fallback when no language model is configured.
+
+    `previous` is the member's last answered plan in this conversation, for follow-up questions.
+    """
     text = " ".join(question.lower().split())
     if detect_injection(question):
         return refusal("injection", catalogue)
@@ -296,46 +544,42 @@ def plan_question(question: str, catalogue: Catalogue) -> AssistantPlan | Refusa
         return refusal("personal", catalogue)
     if _PREDICT.search(text):
         return refusal("prediction", catalogue)
-    if _RELATIONSHIP.search(text):
-        return refusal("relationship", catalogue)
-    if _EXPLAIN.search(text):
-        return refusal("explain", catalogue)
 
+    earlier = catalogue.datasets.get(previous.dataset_id) if previous else None
     matches = _match_measure(text, catalogue)
     if not matches:
-        return refusal("ungrounded", catalogue)
+        # "What about Gauteng?" names no measure: it can only continue the previous answer.
+        if previous is None or earlier is None:
+            return refusal("ungrounded", catalogue)
+        asked = _read(text, earlier)
+        if not asked.names_anything:
+            return refusal("ungrounded", catalogue)
+        return _continue(earlier, previous.measure, asked, previous, catalogue)
+
     top_score = matches[0][0]
     tied = [entry for score, entry in matches if score == top_score]
+    wants_relationship = bool(_RELATIONSHIP.search(text))
 
-    # Among datasets offering the same metric, prefer the one that has the grouping or values asked about.
+    # Among datasets offering the same metric, prefer the one that has the grouping, values or (for a
+    # relationship) the second measure asked about.
     def fit(entry: MeasureEntry) -> int:
-        return (2 if _match_dimension(text, entry.dataset) else 0) + len(_match_filters(text, entry.dataset))
+        score = (2 if _match_dimension(text, entry.dataset) else 0) + len(_match_filters(text, entry.dataset))
+        if wants_relationship:
+            score += 3 * len(_mentioned_measures(text, entry.dataset, catalogue))
+        return score
 
     entry = max(tied, key=fit)
     dataset = entry.dataset
-    dimension = _match_dimension(text, dataset)
-    filters = _match_filters(text, dataset)
-    date_from, date_to, single = _period(text, dataset)
-    wants_trend = bool(_TREND.search(text)) and dataset.has_time
-
-    if dimension == MONTH_DIMENSION or (wants_trend and not single):
-        split = dimension if dimension not in (None, MONTH_DIMENSION) and dimension not in filters else None
-        return AssistantPlan(dataset.id, entry.measure, "trend", None, split, filters, date_from, date_to)
-    if dimension and dimension not in filters:
-        return AssistantPlan(
-            dataset.id, entry.measure, "compare", dimension, None, filters, date_from, date_to
-        )
-    if dataset.has_time:
-        # A single figure: the chosen month (or the latest) against the month before it.
-        months = list(dataset.months)
-        end = date_to or months[-1]
-        index = months.index(end) if end in months else len(months) - 1
-        start = months[max(0, index - 1)]
-        return AssistantPlan(dataset.id, entry.measure, "trend", None, None, filters, start, end, figure=True)
-    first_dim = next(iter(dataset.dimensions), None)
-    if first_dim is None:
-        return refusal("ungrounded", catalogue)
-    return AssistantPlan(dataset.id, entry.measure, "compare", first_dim, None, filters, None, None)
+    asked = _read(text, dataset)
+    if previous is not None and earlier is not None and dataset.id == earlier.id and _FOLLOW_UP.search(text):
+        return _continue(dataset, entry.measure, asked, previous, catalogue)
+    measure, measure_y = entry.measure, None
+    if asked.relationship:
+        named = _mentioned_measures(text, dataset, catalogue)
+        if entry.measure not in named:
+            named.insert(0, entry.measure)
+        measure, measure_y = named[0], (named[1] if len(named) > 1 else None)
+    return _compose(dataset, measure, asked, catalogue, measure_y=measure_y)
 
 
 def plan_schema(catalogue: Catalogue) -> dict[str, Any]:
@@ -351,18 +595,25 @@ def plan_schema(catalogue: Catalogue) -> dict[str, Any]:
             "refusalReason",
             "datasetId",
             "measure",
+            "measureY",
             "method",
             "dimension",
             "filters",
             "period",
+            "followsUp",
         ],
         "properties": {
             "action": {"type": "string", "enum": ["answer", "refuse"]},
             "refusalReason": {"type": ["string", "null"], "enum": [*REFUSAL_REASONS, None]},
             "datasetId": {"type": ["string", "null"], "enum": [*dataset_ids, None]},
             "measure": {"type": ["string", "null"], "enum": [*measures, None]},
-            "method": {"type": ["string", "null"], "enum": ["figure", "compare", "trend", None]},
+            "measureY": {"type": ["string", "null"], "enum": [*measures, None]},
+            "method": {
+                "type": ["string", "null"],
+                "enum": ["figure", "compare", "trend", "relationship", "explain", None],
+            },
             "dimension": {"type": ["string", "null"], "enum": [*dims, None]},
+            "followsUp": {"type": "boolean"},
             "filters": {
                 "type": "array",
                 "items": {
@@ -397,7 +648,8 @@ def catalogue_prompt(catalogue: Catalogue) -> str:
         lines.append(f"Dataset {dataset.id} ({dataset.name})")
         for m in dataset.measures.values():
             tag = "shared metric" if m.governed else "column total"
-            lines.append(f"  measure {m.id}: {m.label} [{m.unit}, {tag}] {m.description}".rstrip())
+            adds = "adds up" if m.additive else "rate, does not add up"
+            lines.append(f"  measure {m.id}: {m.label} [{m.unit}, {tag}, {adds}] {m.description}".rstrip())
         for d in dataset.dimensions.values():
             values = ", ".join(d.values[:25])
             lines.append(f"  dimension {d.id}: {d.label} (values: {values})")
@@ -406,7 +658,14 @@ def catalogue_prompt(catalogue: Catalogue) -> str:
     return "\n".join(lines)
 
 
-def plan_from_model(data: dict[str, Any], catalogue: Catalogue) -> AssistantPlan | Refusal:
+def previous_prompt(question: str, plan: AssistantPlan) -> str:
+    """The previous turn as a language model sees it, so a follow-up can keep what it does not change."""
+    return f"Question: {question}\nPlan: {json.dumps(plan.to_dict(), sort_keys=True)}"
+
+
+def plan_from_model(
+    data: dict[str, Any], catalogue: Catalogue, previous: AssistantPlan | None = None
+) -> AssistantPlan | Refusal:
     """Validate a language model's proposal against the catalogue, exactly like a rule-based plan."""
     if data.get("action") == "refuse":
         reason = data.get("refusalReason")
@@ -444,19 +703,52 @@ def plan_from_model(data: dict[str, Any], catalogue: Catalogue) -> AssistantPlan
     dimension = data.get("dimension")
     if dimension is not None and dimension not in dataset.dimension_ids():
         return refusal("ungrounded", catalogue)
+    follows = bool(data.get("followsUp")) and previous is not None
+
+    def mark(plan: AssistantPlan) -> AssistantPlan:
+        return replace(plan, source="model", follows_up=follows)
+
+    if method == "relationship":
+        measure_y = data.get("measureY")
+        if measure_y is not None and (measure_y not in dataset.measures or measure_y == measure):
+            measure_y = None
+        return mark(
+            AssistantPlan(
+                dataset.id,
+                measure,
+                "relationship",
+                None,
+                None,
+                filters,
+                date_from,
+                date_to,
+                measure_y=measure_y,
+            )
+        )
+    if method == "explain":
+        asked = _Asked(
+            dimension if dimension in dataset.dimensions else None,
+            filters,
+            date_from,
+            date_to,
+            date_from == date_to,
+            False,
+            False,
+            True,
+        )
+        explained = _explain_plan(dataset, measure, asked, catalogue)
+        return mark(explained) if isinstance(explained, AssistantPlan) else explained
     if method == "trend" and dataset.has_time:
         split = dimension if dimension in dataset.dimensions and dimension not in filters else None
-        return AssistantPlan(
-            dataset.id, measure, "trend", None, split, filters, date_from, date_to, source="model"
-        )
+        return mark(AssistantPlan(dataset.id, measure, "trend", None, split, filters, date_from, date_to))
     if method == "compare" and dimension in dataset.dimensions:
-        return AssistantPlan(
-            dataset.id, measure, "compare", dimension, None, filters, date_from, date_to, source="model"
+        return mark(
+            AssistantPlan(dataset.id, measure, "compare", dimension, None, filters, date_from, date_to)
         )
     if dataset.has_time:
         end = date_to or months[-1]
         index = months.index(end)
-        return AssistantPlan(
+        figure = AssistantPlan(
             dataset.id,
             measure,
             "trend",
@@ -466,6 +758,6 @@ def plan_from_model(data: dict[str, Any], catalogue: Catalogue) -> AssistantPlan
             months[max(0, index - 1)],
             end,
             figure=True,
-            source="model",
         )
+        return mark(figure)
     return refusal("ungrounded", catalogue)

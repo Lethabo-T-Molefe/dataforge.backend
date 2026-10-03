@@ -37,7 +37,7 @@ from ..infrastructure.db.models import (
     Share,
     User,
 )
-from . import audit, catalogue, integrations, quotas
+from . import audit, catalogue, inbox, integrations, quotas
 from .common import SYSTEM, Actor, can_see_dataset, humanize, is_queryable, shared_ids, slugify, snake
 from .runtime import sandbox
 
@@ -186,8 +186,13 @@ async def ingest_frame(
     dataset_id: str | None = None,
     preferred_id: str | None = None,
     table_name: str | None = None,
+    source_checksum: str | None = None,
 ) -> Dataset:
-    """Land raw data in bronze, scan it for personal information and profile it. A new version when re-ingested."""
+    """Land raw data in bronze, scan it for personal information and profile it. A new version when re-ingested.
+
+    `source_checksum` fingerprints rows read from a connector (an upload's file is fingerprinted instead), so a
+    refresh can tell whether the source changed.
+    """
     if frame.empty:
         raise ValidationFailed("There are no rows to bring in.")
     try:
@@ -206,10 +211,12 @@ async def ingest_frame(
         new_id, table_name, version = existing.id, existing.table_name, existing.current_version + 1
 
     (profile, columns, pii, insights), elapsed = await sandbox.run_python(
-        lambda: _analyse_frame(frame),
+        _analyse_frame,
+        frame,
         user_id=actor.member_id,
         kind="profile",
         description=f"Profile and PII scan of {source_name}",
+        isolated=True,
     )
     await quotas.add_compute(session, actor.member_id, elapsed)
 
@@ -223,8 +230,7 @@ async def ingest_frame(
 
     landing: tuple[str, str] | None = None
     if landing_file is not None:
-        path, checksum = storage.store(new_id, version, landing_file[0], landing_file[1])
-        landing = (str(path), checksum)
+        landing = await storage.store(new_id, version, landing_file[0], landing_file[1])
 
     conn = await session.connection()
     bronze_table = f"{table_name}_v{version}"
@@ -280,7 +286,7 @@ async def ingest_frame(
             rows=rows,
             column_types={c: "text" for c in frame.columns},
             source_file=landing[0] if landing else None,
-            checksum=landing[1] if landing else None,
+            checksum=landing[1] if landing else source_checksum,
             created_by=actor.id if actor.id != "system" else None,
         )
     )
@@ -363,10 +369,13 @@ async def upload(
         if existing.owner_id != actor.id and actor.role != "admin":
             raise Forbidden("Only the owner can add a new version.")
     frame, _ = await sandbox.run_python(
-        lambda: storage.parse_upload(filename, content),
+        storage.parse_upload,
+        filename,
+        content,
         user_id=actor.member_id,
         kind="profile",
         description=f"Parse {filename}",
+        isolated=True,
     )
     label = name or filename.rsplit(".", 1)[0].replace("_", " ").strip().capitalize()
     dataset = await ingest_frame(
@@ -426,6 +435,15 @@ async def approve(session: AsyncSession, actor: Actor, dataset_id: str, reason: 
         dataset.name,
         f"{dataset.decision_reason}, classification {dataset.classification}",
     )
+    inbox.notify(
+        session,
+        [dataset.owner_id],
+        "decision",
+        f"{dataset.name} was approved",
+        f"{actor.name}: {dataset.decision_reason}. It can now be analysed.",
+        f"/datasets/{dataset.id}",
+        skip=actor.id,
+    )
     await session.commit()
     sync_superset_later(dataset.id)
     return dataset
@@ -447,6 +465,15 @@ async def reject(session: AsyncSession, actor: Actor, dataset_id: str, reason: s
     dataset.fields = None
     await audit.record(
         session, actor, "Rejected dataset", "dataset", dataset.id, dataset.name, reason.strip()
+    )
+    inbox.notify(
+        session,
+        [dataset.owner_id],
+        "decision",
+        f"{dataset.name} needs changes",
+        f"{actor.name}: {reason.strip()}",
+        f"/datasets/{dataset.id}",
+        skip=actor.id,
     )
     await session.commit()
     sync_superset_later(dataset.id)
@@ -497,6 +524,7 @@ async def share_resource(
     session: AsyncSession, actor: Actor, kind: str, resource_id: str, label: str, emails: list[str]
 ) -> list[str]:
     added: list[str] = []
+    recipients: list[str] = []
     for email in {e.strip().lower() for e in emails if e.strip()}:
         user = (
             await session.execute(select(User).where(User.email == email, User.status == "active"))
@@ -513,9 +541,20 @@ async def share_resource(
                 Share(resource_type=kind, resource_id=resource_id, user_id=user.id, created_by=actor.id)
             )
             added.append(user.name)
+            recipients.append(user.id)
     if added:
         await audit.record(
             session, actor, f"Shared {kind}", kind, resource_id, label, f"With {', '.join(added)}"
+        )
+        links = {"dataset": f"/datasets/{resource_id}", "dashboard": f"/dashboards/{resource_id}"}
+        inbox.notify(
+            session,
+            recipients,
+            "share",
+            f"{actor.name} shared {label} with you",
+            "",
+            links.get(kind),
+            skip=actor.id,
         )
     await session.commit()
     return added
@@ -646,6 +685,19 @@ async def promote(session: AsyncSession, actor: Actor, dataset_id: str, columns:
     dataset = await get_visible(session, actor, dataset_id)
     if dataset.layer != Layer.SILVER.value or dataset.status != DatasetStatus.APPROVED.value:
         raise Conflict("Only approved silver data can be promoted to gold.")
+    keep = await write_gold(session, dataset, columns, actor.id)
+    await audit.record(
+        session, actor, "Promoted to gold", "dataset", dataset.id, dataset.name, f"Columns: {', '.join(keep)}"
+    )
+    await session.commit()
+    sync_superset_later(dataset.id)
+    return dataset
+
+
+async def write_gold(
+    session: AsyncSession, dataset: Dataset, columns: list[str] | None, actor_id: str | None
+) -> list[str]:
+    """Copy approved silver into gold (personal columns never go) and point the sandbox at it."""
     conn = await session.connection()
     types = await warehouse.column_types(conn, f"silver.{dataset.table_name}")
     keep = [c for c in (columns or list(types)) if c in types and c not in (dataset.pii_columns or {})]
@@ -669,7 +721,7 @@ async def promote(session: AsyncSession, actor: Actor, dataset_id: str, columns:
         table=f"gold.{dataset.table_name}",
         rows=rows,
         column_types={c: types[c] for c in keep},
-        created_by=actor.id,
+        created_by=actor_id,
     )
     session.add(
         LineageEdge(
@@ -678,16 +730,11 @@ async def promote(session: AsyncSession, actor: Actor, dataset_id: str, columns:
             target=f"gold.{dataset.table_name}",
             transform="promote",
             detail=f"{len(keep)} columns, personal columns left out",
-            actor_id=actor.id,
+            actor_id=actor_id,
         )
     )
     await refresh_fields(session, dataset)
-    await audit.record(
-        session, actor, "Promoted to gold", "dataset", dataset.id, dataset.name, f"Columns: {', '.join(keep)}"
-    )
-    await session.commit()
-    sync_superset_later(dataset.id)
-    return dataset
+    return keep
 
 
 async def erase(session: AsyncSession, actor: Actor, dataset_id: str, reason: str) -> dict[str, Any]:
@@ -709,7 +756,7 @@ async def erase(session: AsyncSession, actor: Actor, dataset_id: str, reason: st
         if await warehouse.table_exists(conn, table):
             await warehouse.drop_table(conn, table)
             dropped.append(table)
-    storage.remove_dataset_files(dataset.id)
+    await storage.remove_dataset_files(dataset.id)
     await session.execute(delete(RowPolicy).where(RowPolicy.dataset_id == dataset.id))
     await session.execute(
         delete(Share).where(Share.resource_type == "dataset", Share.resource_id == dataset.id)

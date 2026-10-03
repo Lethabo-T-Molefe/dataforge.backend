@@ -94,18 +94,32 @@ async def test_mfa_is_enforced_once_enabled(client: AsyncClient) -> None:
 
 async def test_refresh_rotation_detects_reuse(client: AsyncClient) -> None:
     await _register(client, "rotate@example.com")
-    session = (
-        await client.post("/api/v1/auth/login", json={"email": "rotate@example.com", "password": PASSWORD})
-    ).json()
-    rotated = await client.post("/api/v1/auth/refresh", json={"refreshToken": session["refreshToken"]})
-    assert rotated.status_code == 200
+    login = await client.post(
+        "/api/v1/auth/login", json={"email": "rotate@example.com", "password": PASSWORD}
+    )
+    # The refresh token never reaches page scripts: it is only in an HttpOnly cookie for the auth endpoints.
+    assert "refreshToken" not in login.json() and login.json()["accessToken"]
+    cookie = login.headers["set-cookie"].lower()
+    assert "httponly" in cookie and "path=/api/v1/auth" in cookie and "samesite=lax" in cookie
+    first = client.cookies["df_refresh"]
+    rotated = await client.post("/api/v1/auth/refresh", json={})
+    assert rotated.status_code == 200 and "refreshToken" not in rotated.json()
+    second = client.cookies["df_refresh"]
+    assert second != first
+    client.cookies.clear()
+    assert (await client.post("/api/v1/auth/refresh", json={})).status_code == 401
     # Presenting the old token again revokes the whole family, including the newly issued one.
-    assert (
-        await client.post("/api/v1/auth/refresh", json={"refreshToken": session["refreshToken"]})
-    ).status_code == 401
-    assert (
-        await client.post("/api/v1/auth/refresh", json={"refreshToken": rotated.json()["refreshToken"]})
-    ).status_code == 401
+    assert (await client.post("/api/v1/auth/refresh", json={"refreshToken": first})).status_code == 401
+    assert (await client.post("/api/v1/auth/refresh", json={"refreshToken": second})).status_code == 401
+
+
+async def test_signing_out_ends_the_cookie_session(client: AsyncClient) -> None:
+    await _register(client, "leave@example.com")
+    await client.post("/api/v1/auth/login", json={"email": "leave@example.com", "password": PASSWORD})
+    token = client.cookies["df_refresh"]
+    assert (await client.post("/api/v1/auth/logout", json={})).status_code == 204
+    assert "df_refresh" not in client.cookies
+    assert (await client.post("/api/v1/auth/refresh", json={"refreshToken": token})).status_code == 401
 
 
 async def test_roles_gate_endpoints(client: AsyncClient, sign_in: SignIn) -> None:

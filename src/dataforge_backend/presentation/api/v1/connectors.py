@@ -3,12 +3,12 @@ from typing import Any
 from fastapi import APIRouter, Depends, File, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ....application import connectors
+from ....application import connectors, refresh
 from ....application.common import Actor
 from ....core.config import settings
 from ....core.errors import ValidationFailed
 from ..deps import current_actor, get_db
-from ..schemas import ConnectorIn, ImportIn
+from ..schemas import ConnectorIn, ConnectorRefreshIn, ImportIn
 
 router = APIRouter(prefix="/connectors", tags=["Connectors"])
 
@@ -83,7 +83,19 @@ async def import_table(
 async def sync(
     connector_id: str, actor: Actor = Depends(current_actor), session: AsyncSession = Depends(get_db)
 ) -> list[dict[str, Any]]:
-    return await connectors.sync(session, actor, connector_id)
+    """Refresh now: re-read every dataset from this source and rerun its saved recipe."""
+    return await refresh.sync(session, actor, connector_id)
+
+
+@router.patch("/{connector_id}")
+async def set_refresh(
+    connector_id: str,
+    body: ConnectorRefreshIn,
+    actor: Actor = Depends(current_actor),
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """How often a steward wants the source re-read (null: only when someone asks)."""
+    return await connectors.set_refresh(session, actor, connector_id, body.refresh_cadence)
 
 
 @router.delete("/{connector_id}", status_code=status.HTTP_204_NO_CONTENT)

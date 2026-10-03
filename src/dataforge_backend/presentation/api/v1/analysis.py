@@ -73,8 +73,11 @@ async def delete_exploration(
 async def ask(
     body: AskIn, actor: Actor = Depends(current_actor), session: AsyncSession = Depends(get_db)
 ) -> dict[str, Any]:
-    """Ask in plain English. The answer comes with the SQL that ran and an explanation, or a clear refusal."""
-    return await assistant.ask(session, actor, body.question)
+    """Ask in plain English. The answer comes with the SQL that ran and an explanation, or a clear refusal.
+
+    `contextId` is the id of the member's previous answer, so a follow-up ("what about Gauteng?") builds on it.
+    """
+    return await assistant.ask(session, actor, body.question, context_id=body.context_id)
 
 
 @router.get("/assistant/history")
