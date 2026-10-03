@@ -9,7 +9,7 @@ carry the viewer's row policies.
 import json
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import httpx
 
@@ -48,6 +48,24 @@ def rison(value: Any) -> str:
 
 def _q(value: dict[str, Any]) -> str:
     return quote(rison(value), safe="():,!'")
+
+
+def warehouse_uri(database_url: str, role: str, password: str) -> str:
+    """The address Superset reads the warehouse at: the API's database, as the read-only BI login.
+
+    Behind a pooler that routes by "<user>.<project>" (Supabase's), the BI login carries the same project
+    suffix as the API's own login. A database that requires TLS is reached with TLS here too.
+    """
+    parsed = urlparse(database_url)
+    host = parsed.hostname or "localhost"
+    port = parsed.port or 5432
+    database = (parsed.path or "/").lstrip("/")
+    owner = unquote(parsed.username or "")
+    login = f"{role}.{owner.split('.', 1)[1]}" if "." in owner else role
+    options = parse_qs(parsed.query)
+    tls = (options.get("ssl") or options.get("sslmode") or [""])[0]
+    suffix = f"?sslmode={tls}" if tls and tls not in ("disable", "false") else ""
+    return f"postgresql+psycopg2://{quote(login, safe='')}:{quote(password, safe='')}@{host}:{port}/{database}{suffix}"
 
 
 @dataclass
@@ -140,12 +158,7 @@ class SupersetClient:
     # ------------------------------------------------------------------ warehouse connection
 
     def _warehouse_uri(self) -> str:
-        parsed = urlparse(settings.sync_database_url)
-        host = parsed.hostname or "localhost"
-        port = parsed.port or 5432
-        database = (parsed.path or "/").lstrip("/")
-        password = quote(settings.BI_DB_PASSWORD, safe="")
-        return f"postgresql+psycopg2://{settings.BI_DB_ROLE}:{password}@{host}:{port}/{database}"
+        return warehouse_uri(settings.sync_database_url, settings.BI_DB_ROLE, settings.BI_DB_PASSWORD)
 
     async def ensure_database(self) -> int:
         found = await self._request(

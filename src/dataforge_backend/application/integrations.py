@@ -6,12 +6,14 @@ Jupyter kernels query through the DataForge API with the member's own token.
 """
 
 import asyncio
+import hmac
 import re
 from collections.abc import Coroutine
 from typing import Any
 from urllib.parse import quote
 
 from sqlalchemy import select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.config import settings
@@ -74,12 +76,34 @@ async def ensure_bi_role(session: AsyncSession) -> None:
     if not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", role):
         raise ValueError("BI_DB_ROLE must be a simple lower-case identifier.")
     password = settings.BI_DB_PASSWORD.replace("'", "''")
+    # The role's comment records a keyed fingerprint of the password last set, so the password is only set
+    # again when BI_DB_PASSWORD changes. Resetting it gives it a new salt, which a connection pooler that
+    # caches credentials (Supabase's) briefly rejects. The key keeps the fingerprint from revealing it.
+    secret = (settings.SECRETS_KEY or settings.JWT_SECRET).encode()
+    fingerprint = "dataforge:" + hmac.new(secret, settings.BI_DB_PASSWORD.encode(), "sha256").hexdigest()
     conn = await session.connection()
-    exists = (await conn.execute(text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": role})).first()
-    verb = "ALTER" if exists else "CREATE"
-    await conn.execute(
-        text(f"{verb} ROLE {role} WITH LOGIN PASSWORD '{password}' NOSUPERUSER NOCREATEDB NOCREATEROLE")
+    current = (
+        await conn.execute(
+            text("SELECT shobj_description(oid, 'pg_authid') FROM pg_roles WHERE rolname = :r"), {"r": role}
+        )
+    ).first()
+    # A new role has no superuser or role-making rights by default. Naming SUPERUSER in an ALTER is refused
+    # on PostgreSQL 16+ unless the caller is a superuser, which a hosted database's owner (Supabase) is not.
+    statement = (
+        f"CREATE ROLE {role} WITH LOGIN PASSWORD '{password}' NOCREATEDB NOCREATEROLE"
+        if current is None
+        else None
+        if current[0] == fingerprint
+        else f"ALTER ROLE {role} WITH LOGIN PASSWORD '{password}'"
     )
+    if statement:
+        try:
+            await conn.execute(text(statement))
+        except DBAPIError as error:
+            # The statement holds the password, so it must not travel with the error into logs.
+            detail = str(error.orig).splitlines()[0] if error.orig else type(error).__name__
+            raise RuntimeError(f"The {role} login could not be created or updated: {detail}") from None
+        await conn.execute(text(f"COMMENT ON ROLE {role} IS '{fingerprint}'"))
     await conn.execute(text(f"GRANT {settings.SANDBOX_ROLE} TO {role}"))
     await conn.execute(text(f"ALTER ROLE {role} SET default_transaction_read_only = on"))
     await conn.execute(text(f"ALTER ROLE {role} SET statement_timeout = '30s'"))

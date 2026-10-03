@@ -8,7 +8,17 @@ import structlog
 from .config import settings
 
 
+def use_utf8_output() -> None:
+    """Write logs as UTF-8. Windows consoles and redirected output default to a legacy code page, which
+    cannot print characters such as the minus sign figures are formatted with."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def configure_logging() -> None:
+    use_utf8_output()
     level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
     shared_processors: list[structlog.types.Processor] = [
         structlog.contextvars.merge_contextvars,

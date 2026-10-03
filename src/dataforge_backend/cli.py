@@ -18,12 +18,14 @@ from typing import Any
 import typer
 
 from .core.config import settings
+from .core.logging import use_utf8_output
 
 app = typer.Typer(help="DataForge backend operations.", no_args_is_help=True)
 ROOT = Path(__file__).resolve().parents[2]
 
 
 def _run(coro: Any) -> Any:
+    use_utf8_output()
     return asyncio.run(coro)
 
 
