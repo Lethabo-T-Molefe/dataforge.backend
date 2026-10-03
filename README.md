@@ -7,8 +7,9 @@ point-and-click analysis, an AI assistant that answers or refuses, SQL and noteb
 and embedding, monitors with root cause, explainable predictions with PDF and Excel export, an immutable
 audit trail, search, and Slack.
 
-Apache Superset (dashboards, Explore, SQL Lab) and JupyterLab (notebooks) run beside it. Both are themed
-as DataForge and governed by it (see [Superset and Jupyter](#superset-and-jupyter)).
+Apache Superset (dashboards, Explore, SQL Lab) and JupyterLab (notebooks) run beside it, each from its own
+repository and deployed on its own. Both are themed as DataForge and governed by it (see
+[Superset and Jupyter](#superset-and-jupyter)).
 
 ## Architecture
 
@@ -25,9 +26,6 @@ src/dataforge_backend/
                    Slack, external databases
   presentation/    HTTP: v1 routers, request/response shapes (camelCase), auth dependencies, errors
   seed.py, cli.py  demo data and operational commands
-integrations/
-  superset/        Superset 6.1 config, DataForge theme, single sign-on, bootstrap (own virtual environment)
-  jupyter/         JupyterLab 4.6 config, theme, single sign-on, per-member access, `dataforge` client library
 ```
 
 PostgreSQL holds the metadata in schema `app` and member data in schemas `bronze` (raw text, immutable per
@@ -125,18 +123,22 @@ The web app in [`../skills-quest-forge`](../skills-quest-forge) is the client fo
 
 ## Superset and Jupyter
 
-Each has its own virtual environment under `integrations/`, so their dependencies never mix with the API's.
+Each lives in its own repository, with its own environment, Dockerfile and deployment. The API reaches them
+only over HTTP, so they are connected through settings:
 
-**Superset** (Python 3.11):
+| Service | Repository | API settings |
+| --- | --- | --- |
+| Superset | [`dataforge.superset`](https://github.com/Lethabo-T-Molefe/dataforge.superset) | `SUPERSET_URL`, `SUPERSET_PUBLIC_URL`, `SUPERSET_ADMIN_USER`, `SUPERSET_ADMIN_PASSWORD`, `BI_DB_PASSWORD` |
+| Jupyter | [`dataforge.jupyterhub`](https://github.com/Lethabo-T-Molefe/dataforge.jupyterhub) | `JUPYTER_URL`, `JUPYTER_PUBLIC_URL`, `JUPYTER_API_TOKEN` |
+
+Both also share `SSO_SHARED_SECRET` with the API. `*_URL` is where the API reaches the service and
+`*_PUBLIC_URL` is where browsers do, when the two differ. Leave `SUPERSET_URL` or `JUPYTER_URL` empty to turn
+that integration off. Each repository's README covers running and deploying it.
+
+**Superset.** Once it is running, register the warehouse, approved datasets, metrics and row policies:
 
 ```bash
-cd integrations/superset
-uv venv --python 3.11 .venv
-uv pip install --python .venv/Scripts/python.exe -r requirements.txt -c constraints-6.1.0.txt   # .venv/bin/python on Linux/macOS
-cp .env.example .env                       # SSO_SHARED_SECRET and SUPERSET_ADMIN_PASSWORD must match the API's .env
-.venv/Scripts/python bootstrap.py          # migrations, service account, roles (idempotent)
-.venv/Scripts/python run.py                # http://localhost:8088
-cd ../.. && uv run dataforge superset-sync # register the warehouse, approved datasets, metrics and row policies
+uv run dataforge superset-sync
 ```
 
 - Members open Superset from DataForge (`POST /api/v1/integrations/superset/sign-in`): a two-minute, single-use
@@ -148,19 +150,8 @@ cd ../.. && uv run dataforge superset-sync # register the warehouse, approved da
   Superset row-level security rules for `df_<role>` roles.
 - Embedded dashboards use guest tokens that carry the viewer's row policies
   (`POST /api/v1/integrations/superset/dashboards/{id}/guest-token`).
-- The UI uses the DataForge design system (`dataforge_superset/theme.py`): ivory surfaces, charcoal controls,
-  vermilion as a signal, Instrument Sans and Fraunces, pill controls, DataForge chart colours and logo.
-  Dark mode and theme swapping are off, matching DataForge.
 
-**Jupyter** (Python 3.12):
-
-```bash
-cd integrations/jupyter
-uv venv --python 3.12 .venv
-uv pip install --python .venv/Scripts/python.exe -r requirements.txt
-cp .env.example .env                       # SSO_SHARED_SECRET and JUPYTER_API_TOKEN must match the API's .env
-.venv/Scripts/python run.py                # http://localhost:8888/jupyter
-```
+**Jupyter.**
 
 - Members with code roles open JupyterLab from DataForge (`POST /api/v1/integrations/jupyter/sign-in`).
   They work in `members/<their id>/` and `shared/`; other members' folders and terminals are refused.
@@ -169,7 +160,6 @@ cp .env.example .env                       # SSO_SHARED_SECRET and JUPYTER_API_T
   `import dataforge as df; df.sql("SELECT ...")`, or `%load_ext dataforge` and a `%%sql` cell.
 - Any DataForge notebook or generated SQL can be opened in Jupyter
   (`POST /api/v1/integrations/jupyter/notebooks/{id}`, `POST /api/v1/integrations/jupyter/sql`).
-- The UI uses the DataForge theme (`dataforge_jupyter/custom/custom.css`, settings overrides, logo, title).
 
 ## Tests and checks
 
@@ -187,15 +177,17 @@ exports, notebooks, search, erasure and the append-only audit trail. `test_refre
 connector (a schema in the test database) and checks that approval is kept or sent back for review, and that
 the right members are notified; `test_assistant.py` covers explaining changes, relationships and follow-ups.
 The Claude request itself is checked against a fake client (`tests/unit/test_llm.py`), and the worker pool and
-Cloudinary store have their own unit tests. GitHub Actions runs all of this, plus the Docker image builds,
+Cloudinary store have their own unit tests. GitHub Actions runs all of this, plus the API's Docker image build,
 on every push (`.github/workflows/ci.yml`). `test_frontend_contract.py` covers what
 the web app relies on: viewers never start a draft recipe, a skipped step always saves, clearing a quota returns
 to the role's default, sharing can be withdrawn, exports cannot carry spreadsheet formulas, and the contact form.
 
 ## Docker
 
-`docker-compose.yml` runs PostgreSQL, migrations, the API, Superset and Jupyter together. Copy `.env.example`
-to `.env`, set the secrets named in the compose file, then `docker compose up --build`.
+`docker-compose.yml` runs PostgreSQL, migrations, the API, Superset and Jupyter together on one host. It builds
+Superset and Jupyter from their repositories, cloned next to this one (`../dataforge.superset`,
+`../dataforge.jupyterhub`). Copy `.env.example` to `.env`, set the secrets named in the compose file, then
+`docker compose up --build`.
 
 ## Limits to know about
 

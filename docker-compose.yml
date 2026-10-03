@@ -1,4 +1,7 @@
 # DataForge backend, Superset and Jupyter on one host, for a pilot or local end-to-end testing.
+# Superset and Jupyter live in their own repositories; clone them next to this one:
+#   ../dataforge.superset     https://github.com/Lethabo-T-Molefe/dataforge.superset
+#   ../dataforge.jupyterhub   https://github.com/Lethabo-T-Molefe/dataforge.jupyterhub
 #   cp .env.example .env      and fill in the secrets (the same SSO_SHARED_SECRET everywhere)
 #   docker compose up --build
 #   docker compose exec api dataforge seed-demo     (optional demo organisation)
@@ -48,7 +51,7 @@ services:
       migrate: { condition: service_completed_successfully }
 
   superset:
-    build: ./integrations/superset
+    build: ../dataforge.superset
     environment:
       <<: *secrets
       SUPERSET_METADATA_URL: postgresql+psycopg2://dataforge:${POSTGRES_PASSWORD}@postgres:5432/superset
@@ -61,7 +64,7 @@ services:
       postgres: { condition: service_healthy }
 
   jupyter:
-    build: ./integrations/jupyter
+    build: ../dataforge.jupyterhub
     environment:
       <<: *secrets
       JUPYTER_API_TOKEN: ${JUPYTER_API_TOKEN:?set JUPYTER_API_TOKEN}
