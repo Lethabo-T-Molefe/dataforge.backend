@@ -102,6 +102,10 @@ The web app in [`../skills-quest-forge`](../skills-quest-forge) is the client fo
   session.
 - Email addresses are checked for shape only, so internal domains such as `name@org.local` work. Whether an
   address is real is settled by the verification email.
+- Email (verification, password resets, alerts, the contact form) is sent through Resend's API when
+  `RESEND_API_KEY` is set, otherwise by SMTP, and written to the log when neither is. `SMTP_FROM` is the sender
+  either way; with Resend its domain must be verified there. Addresses on reserved domains (`.local`, `.test`,
+  `.example`), such as the demo members', are never sent to.
 - Listing endpoints answer with what the member may see, which can be nothing: an auditor gets an empty
   analysis catalogue rather than a refusal. Actions the role may not take are refused with `403`.
 - Reading never writes: a member who cannot clean a dataset sees its latest recipe, and no draft is started.

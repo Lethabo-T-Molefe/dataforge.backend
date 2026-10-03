@@ -52,7 +52,10 @@ class Settings(BaseSettings):
     REFRESH_COOKIE_SAMESITE: Literal["lax", "strict", "none"] = "lax"
     REFRESH_COOKIE_SECURE: bool | None = None
 
-    # Email (verification). Without SMTP_HOST, emails are written to the log instead of sent.
+    # Email (verification, password resets, alerts). Sent through Resend's API when RESEND_API_KEY is set,
+    # otherwise by SMTP; with neither, emails are written to the log instead of sent. SMTP_FROM is the sender
+    # either way, and with Resend its domain must be one verified there.
+    RESEND_API_KEY: str | None = None
     SMTP_HOST: str | None = None
     SMTP_PORT: int = 587
     SMTP_USER: str | None = None
@@ -112,6 +115,8 @@ class Settings(BaseSettings):
     SUPERSET_ADMIN_USER: str = "dataforge-service"
     SUPERSET_ADMIN_PASSWORD: str = "change-me-superset-service"
     SUPERSET_DATABASE_NAME: str = "DataForge warehouse"
+    # How long the API waits for one Superset call. Raise it when Superset's own database is far from it.
+    SUPERSET_TIMEOUT_SECONDS: float = 30.0
     # The read-only login Superset uses. It inherits the sandbox role's grants: approved tables only.
     BI_DB_ROLE: str = "dataforge_bi"
     BI_DB_PASSWORD: str = "change-me-bi-reader"

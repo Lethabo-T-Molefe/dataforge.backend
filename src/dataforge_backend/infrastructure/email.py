@@ -1,10 +1,16 @@
-"""Outgoing email. Without SMTP settings, messages are written to the log (development only)."""
+"""Outgoing email: through Resend when RESEND_API_KEY is set, otherwise SMTP.
+
+Without either, messages are written to the log (development only).
+"""
 
 import asyncio
 import smtplib
 from email.message import EmailMessage
 
+import httpx
+
 from ..core.config import settings
+from ..core.errors import Unavailable
 from ..core.logging import get_logger
 
 log = get_logger(__name__)
@@ -23,6 +29,32 @@ def _send_sync(message: EmailMessage) -> None:
         client.send_message(message)
 
 
+# Top-level domains reserved for local networks, testing and examples (RFC 2606, RFC 6762).
+_RESERVED_TLDS = {"local", "test", "example", "invalid", "localhost"}
+
+
+async def _send_resend(to: str, subject: str, body: str, reply_to: str | None) -> None:
+    """Send through Resend's HTTP API, which works where outbound mail ports are blocked."""
+    payload: dict[str, object] = {"from": settings.SMTP_FROM, "to": [to], "subject": subject, "text": body}
+    if reply_to:
+        payload["reply_to"] = reply_to
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.post(
+                "https://api.resend.com/emails",
+                headers={"Authorization": f"Bearer {settings.RESEND_API_KEY}"},
+                json=payload,
+            )
+    except httpx.HTTPError as error:
+        log.error("email_not_sent", to=to, subject=subject, error=str(error))
+        raise Unavailable("The email could not be sent. Try again shortly.") from error
+    if response.status_code >= 300:
+        log.error(
+            "email_not_sent", to=to, subject=subject, status=response.status_code, body=response.text[:300]
+        )
+        raise Unavailable("The email could not be sent. Try again shortly.")
+
+
 async def send_email(to: str, subject: str, body: str, *, reply_to: str | None = None) -> None:
     message = EmailMessage()
     message["From"] = settings.SMTP_FROM
@@ -33,6 +65,13 @@ async def send_email(to: str, subject: str, body: str, *, reply_to: str | None =
     message.set_content(body)
     sent.append(message)
     del sent[:-50]
+    if to.rsplit(".", 1)[-1].lower() in _RESERVED_TLDS:
+        # Demo members live at addresses that can never receive mail; sending to them only earns bounces.
+        log.info("email_skipped_undeliverable", to=to, subject=subject)
+        return
+    if settings.RESEND_API_KEY:
+        await _send_resend(to, subject, body, reply_to)
+        return
     if not settings.SMTP_HOST:
         if settings.ENVIRONMENT == "production":
             log.error("email_not_sent_no_smtp", to=to, subject=subject)

@@ -95,7 +95,7 @@ class SupersetClient:
         if not self.enabled:
             raise Unavailable("Superset is not configured.")
         if self._client is None:
-            self._client = httpx.AsyncClient(base_url=self.base, timeout=30)
+            self._client = httpx.AsyncClient(base_url=self.base, timeout=settings.SUPERSET_TIMEOUT_SECONDS)
         if self._token is None:
             try:
                 response = await self._client.post(
