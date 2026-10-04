@@ -57,8 +57,20 @@ class User(TimestampMixin, Base):
     failed_logins: Mapped[int] = mapped_column(Integer, default=0)
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_active_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Bumped on sign-out, password change and token theft. Access JWTs carry the value and are refused when it differs.
+    session_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     quota_overrides: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     erased_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RateBucket(Base):
+    """Per-key counters for auth rate limits. Survives process restarts and is safe under concurrent requests."""
+
+    __tablename__ = "rate_buckets"
+
+    key: Mapped[str] = mapped_column(String(200), primary_key=True)
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    count: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class RefreshToken(Base):

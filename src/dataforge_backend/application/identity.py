@@ -29,6 +29,11 @@ from ..infrastructure.db.models import EmailToken, RefreshToken, User, new_id
 from . import audit, quotas
 from .common import Actor, initials
 
+
+def _bump_session(user: User) -> None:
+    """Invalidate every outstanding access JWT for this member."""
+    user.session_version = int(user.session_version or 0) + 1
+
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 # Hash of a random value, so a sign-in for an unknown email costs the same time as a real check.
 _DUMMY_HASH = hash_password(new_opaque_token())
@@ -149,7 +154,11 @@ async def _issue_session(
     session: AsyncSession, user: User, ip: str | None, user_agent: str | None, family_id: str | None = None
 ) -> dict[str, Any]:
     access = create_token(
-        user.id, "access", expires_in=timedelta(minutes=settings.ACCESS_TOKEN_MINUTES), role=user.role
+        user.id,
+        "access",
+        expires_in=timedelta(minutes=settings.ACCESS_TOKEN_MINUTES),
+        role=user.role,
+        extra={"sv": int(user.session_version or 0)},
     )
     refresh = new_opaque_token()
     session.add(
@@ -273,6 +282,7 @@ async def refresh(
         )
         user = await session.get(User, row.user_id)
         if user is not None:
+            _bump_session(user)
             await audit.record(
                 session,
                 Actor.from_user(user, ip=ip),
@@ -296,16 +306,22 @@ async def refresh(
 
 
 async def logout(session: AsyncSession, token: str | None, actor: Actor | None) -> None:
+    user_id: str | None = actor.id if actor is not None else None
     if token:
         row = (
             await session.execute(select(RefreshToken).where(RefreshToken.token_hash == hash_token(token)))
         ).scalar_one_or_none()
         if row is not None:
+            user_id = row.user_id
             await session.execute(
                 update(RefreshToken)
                 .where(RefreshToken.family_id == row.family_id, RefreshToken.revoked_at.is_(None))
                 .values(revoked_at=utcnow())
             )
+    if user_id is not None:
+        user = await session.get(User, user_id)
+        if user is not None:
+            _bump_session(user)
     if actor is not None:
         await audit.record(session, actor, "Signed out", "Identity provider", actor.id, "Identity provider")
     await session.commit()
@@ -354,6 +370,7 @@ async def change_password(session: AsyncSession, actor: Actor, current: str, new
         raise Forbidden("Your current password is not correct.")
     check_password_strength(new, user.email, user.name)
     user.password_hash = hash_password(new)
+    _bump_session(user)
     await session.execute(
         update(RefreshToken)
         .where(RefreshToken.user_id == user.id, RefreshToken.revoked_at.is_(None))
@@ -393,6 +410,7 @@ async def reset_password(session: AsyncSession, token: str, password: str) -> No
     user.password_hash = hash_password(password)
     user.failed_logins = 0
     user.locked_until = None
+    _bump_session(user)
     row.used_at = utcnow()
     await session.execute(
         update(RefreshToken)

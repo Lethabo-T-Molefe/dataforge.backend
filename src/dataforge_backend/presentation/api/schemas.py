@@ -11,6 +11,8 @@ _EMAIL = re.compile(
     r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}"
     r"@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+"
 )
+# Contact form fields end up in email headers; reject control characters before anything is sent.
+_CONTROL = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
 
 
 def _email(value: str) -> str:
@@ -26,7 +28,14 @@ def _email(value: str) -> str:
     return address.lower()
 
 
+def _no_header_injection(value: str) -> str:
+    if _CONTROL.search(value):
+        raise ValueError("Remove line breaks and control characters.")
+    return value
+
+
 Email = Annotated[str, AfterValidator(_email)]
+SafeLine = Annotated[str, AfterValidator(_no_header_injection)]
 
 
 class Body(BaseModel):
@@ -289,9 +298,9 @@ class ImportIn(Body):
 
 
 class ContactIn(Body):
-    name: str = Field(min_length=2, max_length=200)
+    name: SafeLine = Field(min_length=2, max_length=200)
     email: Email
-    organisation: str = Field(default="", max_length=200)
+    organisation: SafeLine = Field(default="", max_length=200)
     message: str = Field(min_length=8, max_length=4000)
 
 

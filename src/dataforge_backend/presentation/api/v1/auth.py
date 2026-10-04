@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ....application import identity, slack
 from ....application.common import Actor
+from ....application import rate_limit as durable_limits
 from ....core.config import settings
 from ....core.errors import NotFound, Unauthorized
 from ....infrastructure.db.models import User
@@ -58,6 +59,9 @@ async def register(
     request: Request, body: RegisterIn, session: AsyncSession = Depends(get_db)
 ) -> dict[str, Any]:
     """Create an account. A verification email is sent; analysis unlocks once the email is verified."""
+    await durable_limits.consume(
+        session, f"auth:register:{client_ip(request) or 'unknown'}", limit=5, window_seconds=60
+    )
     user = await identity.register(session, body.name, str(body.email), body.password, client_ip(request))
     return {"id": user.id, "email": user.email, "verificationSent": True}
 
@@ -89,6 +93,9 @@ async def login(
 
     A session is the access token in the body and the refresh token in an HttpOnly cookie.
     """
+    await durable_limits.consume(
+        session, f"auth:login:{client_ip(request) or 'unknown'}", limit=10, window_seconds=60
+    )
     result = await identity.login(
         session, str(body.email), body.password, client_ip(request), _agent(request)
     )
@@ -184,6 +191,9 @@ async def change_password(
 async def forgot_password(
     request: Request, body: EmailIn, session: AsyncSession = Depends(get_db)
 ) -> dict[str, bool]:
+    await durable_limits.consume(
+        session, f"auth:forgot:{client_ip(request) or 'unknown'}", limit=3, window_seconds=60
+    )
     await identity.forgot_password(session, str(body.email))
     return {"accepted": True}
 

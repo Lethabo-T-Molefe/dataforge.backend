@@ -31,5 +31,6 @@ ENV PATH="/app/.venv/bin:$PATH" \
 
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s CMD python -c "import os,urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('PORT', '8000') + '/api/v1/health').status == 200 else 1)"
+# Apply migrations before serving so schema changes ship with the image.
 # PORT is set by the host (Render sets it); uvicorn reads WEB_CONCURRENCY for its worker count.
-CMD ["sh", "-c", "exec uvicorn dataforge_backend.main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers"]
+CMD ["sh", "-c", "dataforge migrate && exec uvicorn dataforge_backend.main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers"]

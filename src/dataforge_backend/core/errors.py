@@ -43,6 +43,11 @@ class QuotaExceeded(AppError):
     code = "quota_exceeded"
 
 
+class RateLimited(AppError):
+    status_code = 429
+    code = "rate_limited"
+
+
 class Refused(AppError):
     """The request is understood but refused on governance grounds (for example, a blocked query)."""
 

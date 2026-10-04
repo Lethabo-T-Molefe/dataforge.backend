@@ -115,11 +115,15 @@ async def test_refresh_rotation_detects_reuse(client: AsyncClient) -> None:
 
 async def test_signing_out_ends_the_cookie_session(client: AsyncClient) -> None:
     await _register(client, "leave@example.com")
-    await client.post("/api/v1/auth/login", json={"email": "leave@example.com", "password": PASSWORD})
+    login = await client.post("/api/v1/auth/login", json={"email": "leave@example.com", "password": PASSWORD})
+    access = login.json()["accessToken"]
     token = client.cookies["df_refresh"]
-    assert (await client.post("/api/v1/auth/logout", json={})).status_code == 204
+    assert (await client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {access}"})).status_code == 200
+    assert (await client.post("/api/v1/auth/logout", json={}, headers={"Authorization": f"Bearer {access}"})).status_code == 204
     assert "df_refresh" not in client.cookies
     assert (await client.post("/api/v1/auth/refresh", json={"refreshToken": token})).status_code == 401
+    # The access JWT must stop working immediately — not only after it expires.
+    assert (await client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {access}"})).status_code == 401
 
 
 async def test_roles_gate_endpoints(client: AsyncClient, sign_in: SignIn) -> None:
