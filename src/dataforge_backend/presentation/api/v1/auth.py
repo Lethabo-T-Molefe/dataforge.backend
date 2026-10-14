@@ -93,8 +93,10 @@ async def login(
 
     A session is the access token in the body and the refresh token in an HttpOnly cookie.
     """
+    # Production keeps a firm 10/min; local and test runs open the window so Playwright evidence suites can finish.
+    login_limit = 10 if settings.ENVIRONMENT == "production" else 120
     await durable_limits.consume(
-        session, f"auth:login:{client_ip(request) or 'unknown'}", limit=10, window_seconds=60
+        session, f"auth:login:{client_ip(request) or 'unknown'}", limit=login_limit, window_seconds=60
     )
     result = await identity.login(
         session, str(body.email), body.password, client_ip(request), _agent(request)
