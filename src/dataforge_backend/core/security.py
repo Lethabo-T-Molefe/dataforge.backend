@@ -18,7 +18,7 @@ from .errors import Unauthorized
 # Argon2id is the modern adaptive algorithm recommended for password storage.
 _hasher = PasswordHasher()
 
-TokenType = Literal["access", "mfa", "embed", "notebook"]
+TokenType = Literal["access", "mfa", "mfa_enroll", "embed", "notebook"]
 
 
 def utcnow() -> datetime:

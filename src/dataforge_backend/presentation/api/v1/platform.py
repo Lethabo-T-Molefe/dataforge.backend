@@ -5,17 +5,19 @@ from typing import Any
 from urllib.parse import parse_qs
 
 from fastapi import APIRouter, Depends, Request, Response
+from fastapi.responses import PlainTextResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ....application import audit, inbox, integrations, search, slack
 from ....application.common import Actor
 from ....core.config import settings
-from ....core.errors import Unauthorized
+from ....core.errors import Unauthorized, Unavailable
 from ....core.security import utcnow
 from ....domain.roles import Permission
 from ....infrastructure import email as mail
 from ....infrastructure.notifications import verify_slack_signature
+from ....presentation.metrics import render_prometheus
 from ..deps import current_actor, get_db, limiter
 from ..schemas import ContactIn, NotificationsReadIn, OpenSqlIn
 
@@ -192,9 +194,8 @@ async def contact(request: Request, body: ContactIn) -> dict[str, bool]:
 # ------------------------------------------------------------------ health
 
 
-@router.get("/health", tags=["Health"])
-async def health(session: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    """Liveness and readiness: the database, and whether the sandbox role exists."""
+async def _probe(session: AsyncSession) -> dict[str, Any]:
+    """Shared DB / Redis / sandbox checks for /health and /ready."""
     database = "ok"
     sandbox = "ok"
     try:
@@ -206,9 +207,50 @@ async def health(session: AsyncSession = Depends(get_db)) -> dict[str, Any]:
             sandbox = "missing role: run migrations"
     except Exception:  # noqa: BLE001 - health reports rather than raises
         database = "unreachable"
-    return {
-        "status": "ok" if database == "ok" and sandbox == "ok" else "degraded",
+
+    redis_status: str | None = None
+    if settings.REDIS_URL:
+        redis_status = "ok"
+        try:
+            from redis.asyncio import Redis
+
+            client = Redis.from_url(settings.REDIS_URL, socket_connect_timeout=1)
+            try:
+                await client.ping()
+            finally:
+                await client.aclose()
+        except Exception:  # noqa: BLE001 - health reports rather than raises
+            redis_status = "unreachable"
+
+    ready = database == "ok" and sandbox == "ok" and redis_status != "unreachable"
+    payload: dict[str, Any] = {
+        "status": "ok" if ready else "degraded",
         "database": database,
         "sandbox": sandbox,
         "version": "1.0.0",
+        "ready": ready,
     }
+    if redis_status is not None:
+        payload["redis"] = redis_status
+    return payload
+
+
+@router.get("/health", tags=["Health"])
+async def health(session: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    """Liveness-style probe: always 200 with ok/degraded detail for humans and dashboards."""
+    return await _probe(session)
+
+
+@router.get("/ready", tags=["Health"])
+async def ready(session: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    """Readiness: 503 when the database (or configured Redis) cannot serve traffic."""
+    payload = await _probe(session)
+    if not payload["ready"]:
+        raise Unavailable("DataForge is not ready to accept traffic.")
+    return payload
+
+
+@router.get("/metrics", tags=["Health"], response_class=PlainTextResponse)
+async def metrics() -> PlainTextResponse:
+    """Prometheus text exposition of in-process HTTP counters."""
+    return PlainTextResponse(render_prometheus(), media_type="text/plain; version=0.0.4; charset=utf-8")

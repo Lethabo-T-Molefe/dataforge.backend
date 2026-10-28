@@ -9,6 +9,7 @@ import httpx
 
 from ..core.config import settings
 from ..core.logging import get_logger
+from . import http as outbound
 
 log = get_logger(__name__)
 
@@ -20,8 +21,9 @@ async def post_slack(message: str, blocks: list[dict[str, Any]] | None = None) -
     if blocks:
         payload["blocks"] = blocks
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.post(settings.SLACK_WEBHOOK_URL, json=payload)
+        response = await outbound.post(
+            settings.SLACK_WEBHOOK_URL, timeout=10, retryable=True, json=payload
+        )
         return response.status_code < 300
     except httpx.HTTPError as error:
         log.warning("slack_post_failed", error=str(error))

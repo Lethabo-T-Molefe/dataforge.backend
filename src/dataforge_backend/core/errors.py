@@ -58,3 +58,8 @@ class Refused(AppError):
 class Unavailable(AppError):
     status_code = 503
     code = "unavailable"
+
+
+class PayloadTooLarge(AppError):
+    status_code = 413
+    code = "payload_too_large"

@@ -217,6 +217,30 @@ async def login(
         )
         await session.commit()
         return {"mfaRequired": True, "challengeToken": challenge}
+    # Administrators must enrol MFA before a session is issued.
+    if user.role == Role.ADMIN.value:
+        secret = new_totp_secret()
+        user.mfa_secret_enc = encrypt_secret(secret)
+        challenge = create_token(
+            user.id, "mfa_enroll", expires_in=timedelta(minutes=settings.MFA_CHALLENGE_MINUTES)
+        )
+        await audit.record(
+            session,
+            actor,
+            "Password accepted",
+            "user",
+            user.id,
+            user.email,
+            "Administrator must enrol MFA before signing in",
+        )
+        await session.commit()
+        return {
+            "mfaRequired": False,
+            "mfaEnrollmentRequired": True,
+            "challengeToken": challenge,
+            "secret": secret,
+            "otpauthUri": totp_uri(secret, user.email),
+        }
     tokens = await _issue_session(session, user, ip, user_agent)
     await audit.record(
         session,
@@ -228,17 +252,22 @@ async def login(
         "Password only (MFA not set up)",
     )
     await session.commit()
-    return {"mfaRequired": False, **tokens, "user": await public_user(session, user)}
+    return {"mfaRequired": False, "mfaEnrollmentRequired": False, **tokens, "user": await public_user(session, user)}
 
 
 async def complete_mfa(
     session: AsyncSession, challenge: str, code: str, ip: str | None, user_agent: str | None
 ) -> dict[str, Any]:
-    claims = decode_token(challenge, "mfa")
+    claims = decode_token(challenge, ("mfa", "mfa_enroll"))
     user = await session.get(User, claims.subject)
-    if user is None or not user.mfa_enabled or not user.mfa_secret_enc:
+    if user is None or not user.mfa_secret_enc:
         raise Unauthorized("Sign in again.")
     actor = Actor.from_user(user, ip=ip)
+    enrolling = claims.token_type == "mfa_enroll"
+    if enrolling and user.mfa_enabled:
+        raise Unauthorized("Sign in again.")
+    if not enrolling and not user.mfa_enabled:
+        raise Unauthorized("Sign in again.")
     if not verify_totp(decrypt_secret(user.mfa_secret_enc), code):
         user.failed_logins += 1
         if user.failed_logins >= settings.LOGIN_MAX_ATTEMPTS:
@@ -250,6 +279,9 @@ async def complete_mfa(
         await session.commit()
         raise Unauthorized("That code is not correct. Sign in again to get a new challenge.")
     user.failed_logins = 0
+    if enrolling:
+        user.mfa_enabled = True
+        await audit.record(session, actor, "Turned on MFA", "user", user.id, user.email, "Required for administrator")
     tokens = await _issue_session(session, user, ip, user_agent)
     await audit.record(
         session,
@@ -258,7 +290,7 @@ async def complete_mfa(
         "Identity provider",
         user.id,
         "Identity provider",
-        "Multi-factor authentication passed",
+        "Multi-factor authentication passed" if not enrolling else "Administrator enrolled MFA and signed in",
     )
     await session.commit()
     return {**tokens, "user": await public_user(session, user)}
@@ -299,6 +331,8 @@ async def refresh(
     user = await session.get(User, row.user_id)
     if user is None or user.status != "active":
         raise Unauthorized("Sign in again.")
+    if user.role == Role.ADMIN.value and not user.mfa_enabled:
+        raise Unauthorized("Administrators must enrol multi-factor authentication. Sign in again.")
     tokens = await _issue_session(session, user, ip, user_agent, family_id=row.family_id)
     row.revoked_at = now
     await session.commit()

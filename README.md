@@ -1,5 +1,7 @@
 # DataForge backend
 
+Operations kit (SLOs, backup/restore, k6, health runbooks): [`ops/`](ops/).
+
 The API behind DataForge: governed analytics for everyday members and data scientists. It covers identity
 with MFA, roles and quotas, uploads and read-only connectors, PII detection and masking, quality profiling,
 guided cleaning recipes, the bronze/silver/gold medallion warehouse, a semantic layer of shared metrics,

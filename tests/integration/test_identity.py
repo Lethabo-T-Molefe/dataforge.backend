@@ -63,6 +63,41 @@ async def test_weak_passwords_and_lockout(client: AsyncClient) -> None:
     assert locked.status_code == 401 and "Try again" in locked.json()["error"]["message"]
 
 
+async def test_admin_must_enrol_mfa_before_session(client: AsyncClient) -> None:
+    await _register(client, "admin-mfa@example.com")
+    async with SessionLocal() as session:
+        await session.execute(
+            text("UPDATE app.users SET role = 'admin' WHERE email = 'admin-mfa@example.com'")
+        )
+        await session.commit()
+    challenge = (
+        await client.post(
+            "/api/v1/auth/login", json={"email": "admin-mfa@example.com", "password": PASSWORD}
+        )
+    ).json()
+    assert challenge.get("mfaEnrollmentRequired") is True
+    assert "accessToken" not in challenge
+    assert challenge["otpauthUri"].startswith("otpauth://")
+    totp = pyotp.TOTP(challenge["secret"])
+    bad = await client.post(
+        "/api/v1/auth/mfa", json={"challengeToken": challenge["challengeToken"], "code": "000000"}
+    )
+    assert bad.status_code == 401
+    # Sign in again for a fresh enrollment challenge after the failed attempt.
+    challenge = (
+        await client.post(
+            "/api/v1/auth/login", json={"email": "admin-mfa@example.com", "password": PASSWORD}
+        )
+    ).json()
+    totp = pyotp.TOTP(challenge["secret"])
+    good = await client.post(
+        "/api/v1/auth/mfa",
+        json={"challengeToken": challenge["challengeToken"], "code": totp.now()},
+    )
+    assert good.status_code == 200 and good.json()["user"]["mfaEnabled"] is True
+    assert good.json()["user"]["roleId"] == "admin"
+
+
 async def test_mfa_is_enforced_once_enabled(client: AsyncClient) -> None:
     await _register(client, "mfa@example.com")
     first = (

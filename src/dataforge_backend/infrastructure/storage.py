@@ -113,7 +113,9 @@ class CloudinaryStore:
     def get(self, key: str) -> bytes:
         url, _ = cloudinary.utils.cloudinary_url(self._public_id(key), sign_url=True, **self._asset)
         try:
-            response = httpx.get(url, timeout=120, follow_redirects=True)
+            from .http import get_sync
+
+            response = get_sync(url, timeout=120, follow_redirects=True)
         except httpx.HTTPError as error:
             raise Unavailable("The file store could not be reached.") from error
         if response.status_code == 404:

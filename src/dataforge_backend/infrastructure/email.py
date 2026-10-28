@@ -12,6 +12,7 @@ import httpx
 from ..core.config import settings
 from ..core.errors import Unavailable
 from ..core.logging import get_logger
+from . import http as outbound
 
 log = get_logger(__name__)
 
@@ -39,12 +40,13 @@ async def _send_resend(to: str, subject: str, body: str, reply_to: str | None) -
     if reply_to:
         payload["reply_to"] = reply_to
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            response = await client.post(
-                "https://api.resend.com/emails",
-                headers={"Authorization": f"Bearer {settings.RESEND_API_KEY}"},
-                json=payload,
-            )
+        response = await outbound.post(
+            "https://api.resend.com/emails",
+            timeout=20,
+            retryable=True,
+            headers={"Authorization": f"Bearer {settings.RESEND_API_KEY}"},
+            json=payload,
+        )
     except httpx.HTTPError as error:
         log.error("email_not_sent", to=to, subject=subject, error=str(error))
         raise Unavailable("The email could not be sent. Try again shortly.") from error

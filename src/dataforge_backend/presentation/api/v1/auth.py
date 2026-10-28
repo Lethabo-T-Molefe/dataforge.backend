@@ -59,8 +59,12 @@ async def register(
     request: Request, body: RegisterIn, session: AsyncSession = Depends(get_db)
 ) -> dict[str, Any]:
     """Create an account. A verification email is sent; analysis unlocks once the email is verified."""
+    register_limit = 5 if settings.ENVIRONMENT == "production" else 120
     await durable_limits.consume(
-        session, f"auth:register:{client_ip(request) or 'unknown'}", limit=5, window_seconds=60
+        session,
+        f"auth:register:{client_ip(request) or 'unknown'}",
+        limit=register_limit,
+        window_seconds=60,
     )
     user = await identity.register(session, body.name, str(body.email), body.password, client_ip(request))
     return {"id": user.id, "email": user.email, "verificationSent": True}
@@ -80,6 +84,9 @@ async def verify_email(
 async def resend_verification(
     request: Request, body: EmailIn, session: AsyncSession = Depends(get_db)
 ) -> dict[str, bool]:
+    await durable_limits.consume(
+        session, f"auth:resend:{client_ip(request) or 'unknown'}", limit=3, window_seconds=60
+    )
     await identity.resend_verification(session, str(body.email))
     return {"accepted": True}
 
@@ -109,6 +116,9 @@ async def login(
 async def complete_mfa(
     request: Request, response: Response, body: MfaIn, session: AsyncSession = Depends(get_db)
 ) -> dict[str, Any]:
+    await durable_limits.consume(
+        session, f"auth:mfa:{client_ip(request) or 'unknown'}", limit=10, window_seconds=60
+    )
     result = await identity.complete_mfa(
         session, body.challenge_token, body.code, client_ip(request), _agent(request)
     )
@@ -124,6 +134,9 @@ async def refresh(
     session: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """A new access token. The refresh token in the cookie is rotated; reusing an old one ends the session."""
+    await durable_limits.consume(
+        session, f"auth:refresh:{client_ip(request) or 'unknown'}", limit=30, window_seconds=60
+    )
     token = _presented(request, body.refresh_token if body else None)
     if not token:
         raise Unauthorized("Sign in again.")
@@ -203,6 +216,9 @@ async def forgot_password(
 @router.post("/reset-password", status_code=status.HTTP_204_NO_CONTENT)
 @limiter.limit("10/minute")
 async def reset_password(request: Request, body: ResetIn, session: AsyncSession = Depends(get_db)) -> None:
+    await durable_limits.consume(
+        session, f"auth:reset:{client_ip(request) or 'unknown'}", limit=10, window_seconds=60
+    )
     await identity.reset_password(session, body.token, body.password)
 
 

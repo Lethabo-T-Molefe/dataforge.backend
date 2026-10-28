@@ -149,8 +149,9 @@ class SupersetClient:
         if not self.enabled:
             return SupersetStatus(False, False, None, "Set SUPERSET_URL to enable Superset.")
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
-                response = await client.get(f"{self.base}/health")
+            from . import http as outbound
+
+            response = await outbound.get(f"{self.base}/health", timeout=5)
             return SupersetStatus(True, response.status_code == 200, self.public_url)
         except httpx.HTTPError:
             return SupersetStatus(True, False, self.public_url, "Superset is not reachable.")

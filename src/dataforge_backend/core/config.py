@@ -69,6 +69,8 @@ class Settings(BaseSettings):
     # (cloudinary://<api key>:<api secret>@<cloud name>, as shown in the Cloudinary console).
     STORAGE_DIR: Path = Path("var/landing")
     MAX_UPLOAD_MB: int = 250
+    # Non-multipart JSON/API bodies (uploads keep MAX_UPLOAD_MB).
+    MAX_JSON_BODY_MB: float = 2.0
     CLOUDINARY_URL: str | None = None
     CLOUDINARY_FOLDER: str = "dataforge"
     # Encrypt files before they leave the API, so the file store only ever holds ciphertext.
