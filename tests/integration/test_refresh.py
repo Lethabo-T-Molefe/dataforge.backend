@@ -9,6 +9,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import text
 
+from catalogue_progress import marks
 from dataforge_backend.core.database import engine
 
 from .conftest import SignIn
@@ -43,6 +44,7 @@ async def _ok(response: Any, status: int = 200) -> Any:
     return response.json()
 
 
+@marks("K-05", "K-13", "K-14", "K-15", "K-17", "K-18", "ST-09", "NT-01")
 async def test_a_refresh_keeps_approval_only_when_nothing_changed_shape(
     client: AsyncClient, sign_in: SignIn, source: None
 ) -> None:
@@ -139,6 +141,7 @@ async def test_a_refresh_keeps_approval_only_when_nothing_changed_shape(
     assert scheduled["refreshCadence"] == "daily"
 
 
+@marks("NT-01")
 async def test_owners_hear_about_decisions_on_their_data(client: AsyncClient, sign_in: SignIn) -> None:
     analyst = await sign_in("analyst")
     before = await _ok(await client.get("/api/v1/notifications", headers=analyst))

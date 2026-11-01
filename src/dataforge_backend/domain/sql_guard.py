@@ -60,6 +60,8 @@ _DENIED_PREFIXES = (
     "file",
     "inet_",
 )
+# sqlglot rewrites version() to CurrentVersion, whose name is current_version, not version.
+_DENIED_NAMES = frozenset({"version", "current_version"})
 
 
 class QueryRefused(Exception):
@@ -115,7 +117,7 @@ def _check_functions(tree: exp.Expression) -> None:
                 "Use a table of permitted data instead.",
             )
         name = _function_name(node)
-        if name.startswith(_DENIED_PREFIXES):
+        if name in _DENIED_NAMES or name.startswith(_DENIED_PREFIXES):
             raise QueryRefused(f"{name} is a system function and is not available in the sandbox.")
         if isinstance(node, exp.Anonymous) and name not in _ALLOWED_ANONYMOUS:
             raise QueryRefused(

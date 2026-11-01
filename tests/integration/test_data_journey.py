@@ -4,6 +4,8 @@ import io
 
 from httpx import AsyncClient
 
+from catalogue_progress import marks
+
 from .conftest import SignIn
 
 CSV = "\n".join(
@@ -16,6 +18,7 @@ CSV = "\n".join(
 )
 
 
+@marks("U-01", "U-20", "C-12", "G-02", "G-05", "N-01", "PI-11", "ST-01")
 async def test_upload_clean_approve_and_analyse(client: AsyncClient, sign_in: SignIn) -> None:
     analyst = await sign_in("analyst")
     upload = await client.post(
@@ -98,6 +101,7 @@ async def test_upload_clean_approve_and_analyse(client: AsyncClient, sign_in: Si
     assert [e["transform"] for e in lineage][:2] == ["upload", "clean"]
 
 
+@marks("N-13", "AN-03")
 async def test_analysis_matches_the_frontend_numbers(client: AsyncClient, sign_in: SignIn) -> None:
     analyst = await sign_in("analyst")
     catalogue = (await client.get("/api/v1/analysis/catalogue", headers=analyst)).json()
@@ -142,6 +146,7 @@ async def test_analysis_matches_the_frontend_numbers(client: AsyncClient, sign_i
         assert result.json()["reading"]
 
 
+@marks("Q-01", "Q-03", "Q-04", "Q-14", "ST-11")
 async def test_assistant_answers_with_sql_or_refuses(client: AsyncClient, sign_in: SignIn) -> None:
     analyst = await sign_in("analyst")
     answer = (
@@ -178,6 +183,7 @@ async def test_assistant_answers_with_sql_or_refuses(client: AsyncClient, sign_i
     assert injection["refused"] is True
 
 
+@marks("A-11", "S-12", "N-13", "GR-04")
 async def test_row_policies_restrict_every_surface(client: AsyncClient, sign_in: SignIn) -> None:
     steward = await sign_in("steward")
     policy = await client.put(
@@ -235,6 +241,7 @@ async def test_row_policies_restrict_every_surface(client: AsyncClient, sign_in:
     ).status_code == 204
 
 
+@marks("D-09", "D-10", "ER-08", "ER-10")
 async def test_dashboards_follow_visibility_and_embedding(client: AsyncClient, sign_in: SignIn) -> None:
     analyst, executive = await sign_in("analyst"), await sign_in("executive")
     mine = {d["id"] for d in (await client.get("/api/v1/dashboards", headers=analyst)).json()}
@@ -254,6 +261,7 @@ async def test_dashboards_follow_visibility_and_embedding(client: AsyncClient, s
     assert (await client.get("/api/v1/embed/dashboards/exec-overview?token=forged")).status_code == 401
 
 
+@marks("MO-01", "PR-05", "PR-09", "ST-13")
 async def test_monitors_alerts_and_predictions(client: AsyncClient, sign_in: SignIn) -> None:
     analyst = await sign_in("analyst")
     alerts = (await client.get("/api/v1/alerts", headers=analyst)).json()
@@ -292,6 +300,7 @@ async def test_monitors_alerts_and_predictions(client: AsyncClient, sign_in: Sig
     assert uneven.status_code == 422
 
 
+@marks("B-08", "G-18", "G-19", "SE-01", "C-03", "M-07", "M-08")
 async def test_notebooks_metrics_search_and_erasure(client: AsyncClient, sign_in: SignIn) -> None:
     practitioner = await sign_in("practitioner")
     notebook = (await client.get("/api/v1/notebooks/nb-enrolment", headers=practitioner)).json()

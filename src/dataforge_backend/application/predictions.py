@@ -123,14 +123,20 @@ async def create_version(session: AsyncSession, actor: Actor, body: dict[str, An
     return model_dict(model)
 
 
+def score_windows(months: list[str]) -> tuple[tuple[str, str], tuple[str, str]]:
+    """(recent, before). recent is the last three months; before is the three before that."""
+    recent = (months[-3], months[-1]) if len(months) >= 3 else (months[0], months[-1])
+    before = (months[-6], months[-4]) if len(months) >= 6 else (months[0], months[max(0, len(months) - 4)])
+    return recent, before
+
+
 async def _factor_input(
     session: AsyncSession, actor: Actor, dataset: AnalysisDataset, factor: FactorSpec, filters: dict[str, str]
 ) -> FactorInput:
     months = list(dataset.months)
     measure = dataset.measures[factor.measure]
     dims = list(dataset.dimensions)
-    recent = (months[-3], months[-1]) if len(months) >= 3 else (months[0], months[-1])
-    before = (months[-6], months[-4]) if len(months) >= 6 else (months[0], months[max(0, len(months) - 4)])
+    recent, before = score_windows(months)
 
     async def population_values(window: tuple[str, str]) -> dict[tuple[str, ...], float]:
         rows = await analysis.query_groups(

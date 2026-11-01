@@ -4,6 +4,7 @@ from typing import Any
 
 import pytest
 
+from catalogue_progress import marks
 from dataforge_backend.core.config import settings
 from dataforge_backend.core.crypto import decrypt_bytes, encrypt_bytes
 from dataforge_backend.core.errors import ValidationFailed
@@ -14,6 +15,7 @@ from dataforge_backend.infrastructure.workers import WorkerPool
 # ------------------------------------------------------------------ worker processes
 
 
+@marks("WK-02")
 async def test_a_job_runs_in_a_reused_worker_process() -> None:
     pool = WorkerPool(1, 1024)
     try:
@@ -36,6 +38,7 @@ async def test_errors_come_back_as_they_were_raised() -> None:
         pool.shutdown()
 
 
+@marks("WK-03", "O-05")
 async def test_a_job_past_its_time_limit_is_killed() -> None:
     pool = WorkerPool(1, 1024)
     try:
@@ -53,6 +56,7 @@ async def test_a_job_past_its_time_limit_is_killed() -> None:
 # ------------------------------------------------------------------ file encryption
 
 
+@marks("WK-07", "WK-08", "U-25")
 def test_files_are_encrypted_and_plain_files_still_read() -> None:
     blob = encrypt_bytes(b"name,id_number\nThandi,9001015009087\n")
     assert blob.startswith(b"DFE1") and b"Thandi" not in blob
@@ -132,6 +136,7 @@ def test_cloudinary_prefix_deletes_follow_the_cursor(monkeypatch: pytest.MonkeyP
     assert calls == [("dataforge/datasets/d1/", None), ("dataforge/datasets/d1/", "page-2")]
 
 
+@marks("U-26")
 def test_a_malformed_cloudinary_url_is_refused() -> None:
     with pytest.raises(ValueError, match="cloudinary://"):
         CloudinaryStore("https://example.com", "dataforge", encrypt=True)

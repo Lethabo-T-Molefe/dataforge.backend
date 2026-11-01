@@ -143,7 +143,12 @@ async def resend_verification(session: AsyncSession, email: str) -> None:
         await session.execute(select(User).where(User.email == normalise_email(email)))
     ).scalar_one_or_none()
     # The response is the same whether or not the account exists, so emails cannot be enumerated.
-    if user is None or user.email_verified_at is not None:
+    if (
+        user is None
+        or user.email_verified_at is not None
+        or user.status != "active"
+        or user.erased_at is not None
+    ):
         return
     token = await issue_email_token(session, user, "verify", settings.EMAIL_TOKEN_HOURS)
     await session.commit()
@@ -420,7 +425,7 @@ async def forgot_password(session: AsyncSession, email: str) -> None:
     user = (
         await session.execute(select(User).where(User.email == normalise_email(email)))
     ).scalar_one_or_none()
-    if user is None or user.status != "active":
+    if user is None or user.status != "active" or user.erased_at is not None:
         return
     token = await issue_email_token(session, user, "reset", 1)
     await session.commit()

@@ -420,7 +420,7 @@ def _compare(dataset: AnalysisDataset, config: BuildConfig, rows: list[dict[str,
             f"{top.name}: {fmt(top.value)}. Only one {singular} matches the filters, so there is nothing to "
             f"compare it with. Clear the {singular} filter to compare."
         )
-    elif additive and config.aggregation == "total":
+    elif additive and config.aggregation == "total" and finite(top.share):
         reading += f" {top.name} alone accounts for {js_fixed(top.share, 0)}% of the total."
     elif not additive:
         reading += f" The gap between them is {format_delta(top.value - bottom.value, m.unit)}."
@@ -456,7 +456,7 @@ def _compare(dataset: AnalysisDataset, config: BuildConfig, rows: list[dict[str,
     for item in ordered:
         cells: list[Any] = [item.name, fmt(item.value)]
         if additive:
-            cells.append(f"{js_fixed(item.share, 1)}%")
+            cells.append(f"{js_fixed(item.share, 1)}%" if finite(item.share) else "—")
         cells.append(f"{js_fixed(item.index, 0)}" if finite(item.index) else "—")
         if volume_label:
             cells.append(format_number(item.volume))

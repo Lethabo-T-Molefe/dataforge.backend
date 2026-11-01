@@ -248,7 +248,11 @@ def parse_upload(filename: str, content: bytes) -> pd.DataFrame:
     if frame.empty or len(frame.columns) == 0:
         raise ValidationFailed("The file has no rows.")
     frame = frame.dropna(how="all")
-    frame.columns = [str(c).strip() or f"column_{i + 1}" for i, c in enumerate(frame.columns)]
+    # pandas names a blank CSV header "Unnamed: N"; treat those as blank too.
+    frame.columns = [
+        (name if (name := str(c).strip()) and not name.lower().startswith("unnamed") else f"column_{i + 1}")
+        for i, c in enumerate(frame.columns)
+    ]
     return frame
 
 

@@ -88,6 +88,12 @@ def snake(text: str, max_length: int = 50) -> str:
     return slugify(text, max_length).replace("-", "_") or "item"
 
 
+def contains_like(text: str) -> str:
+    """A LIKE pattern for this text. % and _ in the text are characters, not wildcards."""
+    escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
 def humanize(moment: datetime | None, now: datetime | None = None) -> str:
     """ "2 hours ago", "Yesterday", "3 days ago", the way the frontend words times."""
     if moment is None:

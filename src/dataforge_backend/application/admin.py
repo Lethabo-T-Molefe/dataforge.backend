@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.errors import Conflict, NotFound, ValidationFailed
@@ -49,14 +49,15 @@ async def list_members(session: AsyncSession, actor: Actor) -> list[dict[str, An
 
 
 async def _admins(session: AsyncSession) -> int:
-    return int(
-        (
-            await session.execute(
-                select(func.count()).select_from(User).where(User.role == "admin", User.status == "active")
-            )
-        ).scalar()
-        or 0
+    # Lock the admin rows so two administrators cannot both pass the "last admin" check
+    # and demote each other. Ordered so the locks are taken in the same sequence.
+    rows = await session.execute(
+        select(User.id)
+        .where(User.role == "admin", User.status == "active")
+        .order_by(User.id)
+        .with_for_update()
     )
+    return len(rows.scalars().all())
 
 
 async def update_member(

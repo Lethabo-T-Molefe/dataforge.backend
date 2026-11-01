@@ -5,11 +5,14 @@ import io
 
 from httpx import AsyncClient
 
+from catalogue_progress import marks
+
 from .conftest import SignIn
 
 API = "/api/v1"
 
 
+@marks("C-01")
 async def test_cleaning_studio_never_writes_for_viewers(client: AsyncClient, sign_in: SignIn) -> None:
     executive = await sign_in("executive")
     steward = await sign_in("steward")
@@ -70,6 +73,7 @@ async def test_unknown_method_is_not_found_and_skips_always_save(
     assert all(s["stepId"] != step["stepId"] for s in removed.json()["steps"])
 
 
+@marks("A-08")
 async def test_clearing_a_quota_returns_to_the_role_default(client: AsyncClient, sign_in: SignIn) -> None:
     admin = await sign_in("admin")
     members = (await client.get(f"{API}/members", headers=admin)).json()
@@ -98,6 +102,7 @@ async def test_clearing_a_quota_returns_to_the_role_default(client: AsyncClient,
     assert negative.status_code == 422
 
 
+@marks("D-07")
 async def test_dashboard_sharing_can_be_withdrawn(client: AsyncClient, sign_in: SignIn) -> None:
     analyst = await sign_in("analyst")
     curator = await sign_in("curator")
@@ -180,25 +185,35 @@ async def test_internal_email_domains_can_sign_in(client: AsyncClient) -> None:
     assert malformed.status_code == 422
 
 
+@marks("X-09", "X-11")
 async def test_contact_form_reaches_the_platform_contact(client: AsyncClient) -> None:
     from dataforge_backend.infrastructure import email as mail
 
     mail.sent.clear()
-    sent = await client.post(
+    injected = await client.post(
         f"{API}/contact",
         json={
-            "name": "Nomsa  Zulu\nBcc: someone@example.org",
+            "name": "Nomsa Zulu\nBcc: someone@example.org",
             "email": "nomsa@example.org",
             "organisation": "Ubuntu Learning",
             "message": "We would like to see a demonstration next month.",
         },
     )
+    assert injected.status_code == 422
+    sent = await client.post(
+        f"{API}/contact",
+        json={
+            "name": "Nomsa  Zulu",
+            "email": "nomsa@example.org",
+            "organisation": "Ubuntu Learning",
+            "message": "We would like to see a demonstration\nnext month.",
+        },
+    )
     assert sent.status_code == 202, sent.text
     message = mail.sent[-1]
     assert message["Reply-To"] == "nomsa@example.org"
-    # Whatever is typed into the name, it stays one header line: no header can be smuggled in.
     assert "\n" not in message["Subject"] and message["Bcc"] is None
-    assert "demonstration next month" in message.get_content()
+    assert "demonstration" in message.get_content() and "next month" in message.get_content()
 
     too_short = await client.post(
         f"{API}/contact", json={"name": "N", "email": "nomsa@example.org", "message": "Hi"}

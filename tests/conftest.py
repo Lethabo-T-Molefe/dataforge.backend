@@ -1,7 +1,10 @@
 """Test configuration. Runs before the application is imported, so settings pick up the test environment."""
 
 import os
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from dotenv import dotenv_values
 
@@ -22,6 +25,7 @@ os.environ["DATABASE_URL"] = (
 os.environ["ENVIRONMENT"] = "test"
 os.environ["DEMO_MODE"] = "true"
 os.environ["ANTHROPIC_API_KEY"] = ""
+os.environ["OPENROUTER_API_KEY"] = ""
 os.environ["SUPERSET_URL"] = ""
 os.environ["JUPYTER_URL"] = ""
 os.environ["SLACK_WEBHOOK_URL"] = ""
@@ -32,3 +36,9 @@ os.environ["STORAGE_DIR"] = str(Path(__file__).resolve().parents[1] / "var" / "t
 # Tests never reach hosted services configured for development: files land on local disk, errors stay local.
 os.environ["CLOUDINARY_URL"] = ""
 os.environ["SENTRY_DSN"] = ""
+
+
+def pytest_sessionfinish(session, exitstatus) -> None:
+    from catalogue_progress import write_checklist
+
+    write_checklist()

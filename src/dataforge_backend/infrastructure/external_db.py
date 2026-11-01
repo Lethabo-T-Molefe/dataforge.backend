@@ -39,7 +39,10 @@ async def _connect(config: SourceConfig) -> asyncpg.Connection:
             },
         )
     except (OSError, asyncpg.PostgresError, TimeoutError) as error:
-        raise ValidationFailed(f"Could not connect to the source: {str(error)[:200]}") from error
+        detail = str(error)
+        if config.password:
+            detail = detail.replace(config.password, "••••")
+        raise ValidationFailed(f"Could not connect to the source: {detail[:200]}") from error
     return conn
 
 

@@ -140,7 +140,9 @@ def enforce_masking(frame: pd.DataFrame, pii_columns: dict[str, str]) -> tuple[p
         if column not in out.columns or _looks_masked(out[column]):
             continue
         out[column] = pd.Series(
-            out[column].map(lambda v, k=kind: mask_value(v, k or PiiKind.NAME)), index=out.index, dtype=object
+            [mask_value(v, kind or PiiKind.NAME) for v in out[column].tolist()],
+            index=out.index,
+            dtype=object,
         )
         masked.append(column)
     return out, masked

@@ -88,6 +88,9 @@ class Settings(BaseSettings):
     # AI assistant. Without an API key the assistant uses its rule-based parser.
     ANTHROPIC_API_KEY: str | None = None
     ASSISTANT_MODEL: str = "claude-opus-5-5"
+    # Without an Anthropic key, a model on OpenRouter plans instead.
+    OPENROUTER_API_KEY: str | None = None
+    OPENROUTER_MODEL: str = "nvidia/nemotron-3.5-super-vl:free"
     ASSISTANT_USE_LLM: bool = True
     ASSISTANT_TIMEOUT_SECONDS: float = 30.0
 
@@ -180,7 +183,7 @@ class Settings(BaseSettings):
 
     @property
     def llm_enabled(self) -> bool:
-        return self.ASSISTANT_USE_LLM and bool(self.ANTHROPIC_API_KEY)
+        return self.ASSISTANT_USE_LLM and bool(self.ANTHROPIC_API_KEY or self.OPENROUTER_API_KEY)
 
 
 settings = Settings()

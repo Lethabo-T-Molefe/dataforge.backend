@@ -268,6 +268,8 @@ async def save_cell(
                 "Someone else changed this cell. Reload to see their version.",
                 details={"current": cell_dict(cell)},
             )
+        if cell.source != source or cell.kind != kind:
+            cell.output = None
         cell.kind, cell.source = kind, source
         cell.revision += 1
         cell.updated_by = actor.id

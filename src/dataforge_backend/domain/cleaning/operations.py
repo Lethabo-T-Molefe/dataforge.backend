@@ -5,6 +5,7 @@ the same silver table from the same input.
 """
 
 import json
+import math
 import re
 import unicodedata
 from collections.abc import Callable
@@ -245,8 +246,17 @@ def fill_missing(frame: pd.DataFrame, params: dict[str, Any], ctx: CleaningConte
                 value = params.get("value", "Unknown")
                 out[column] = _as_object(np.where(missing, value, series), out.index)
             elif strategy in ("mean", "median"):
+                if not missing.any():
+                    continue
+                observed = series[~missing]
+                if len(observed) and float(_numeric(observed).notna().mean()) < 1:
+                    raise OperationError(
+                        f"{strategy} fills numeric columns. Use mode or MissForest for categories."
+                    )
                 numeric = _numeric(series)
                 stat = float(numeric.mean() if strategy == "mean" else numeric.median())
+                if not math.isfinite(stat):
+                    continue
                 out[column] = _as_object(np.where(numeric.isna(), round(stat, 4), numeric), out.index)
             elif strategy == "mode":
                 observed = series[~missing].astype(str).str.strip()
@@ -278,14 +288,12 @@ def fill_missing(frame: pd.DataFrame, params: dict[str, Any], ctx: CleaningConte
     label = {"constant": f"'{params.get('value', 'Unknown')}'", "unknown": "'Unknown'"}.get(
         strategy, strategy.replace("_", " ")
     )
-    return _outcome(
-        frame,
-        out,
-        affected,
+    summary = (
         f"Filled {thousands(filled_total)} blank cells in {', '.join(columns)} using {label}."
-        if columns
-        else "No column needed filling.",
+        if columns and filled_total
+        else "No column needed filling."
     )
+    return _outcome(frame, out, affected, summary)
 
 
 @operation("drop_missing_rows")
@@ -510,11 +518,12 @@ def parse_dates(frame: pd.DataFrame, params: dict[str, Any], ctx: CleaningContex
     out = frame.copy()
     unreadable: list[str] = []
     for column in columns:
-        parsed = frame[column].map(lambda v: parse_date(v, day_first=day_first))
-        lost = int((parsed.isna() & ~_missing(frame[column])).sum())
+        # A Python list, so a failed parse stays None. pandas would turn that None into NaN.
+        parsed = [parse_date(v, day_first=day_first) for v in frame[column].tolist()]
+        lost = sum(d is None and not is_sentinel(v) for d, v in zip(parsed, frame[column].tolist(), strict=True))
         if lost:
             unreadable.append(f"{lost} in {column}")
-        out[column] = _as_object(parsed.map(lambda d: d.isoformat() if d else None), frame.index)
+        out[column] = _as_object([None if d is None else d.isoformat() for d in parsed], frame.index)
     note = f" Could not read {', '.join(unreadable)}; those are now blank." if unreadable else ""
     return _outcome(
         frame,
@@ -531,12 +540,12 @@ def parse_numbers(frame: pd.DataFrame, params: dict[str, Any], ctx: CleaningCont
     out = frame.copy()
     unreadable: list[str] = []
     for column in columns:
-        parsed = frame[column].map(parse_number)
-        lost = int((parsed.isna() & ~_missing(frame[column])).sum())
+        parsed = [parse_number(v) for v in frame[column].tolist()]
+        lost = sum(n is None and not is_sentinel(v) for n, v in zip(parsed, frame[column].tolist(), strict=True))
         if lost:
             unreadable.append(f"{lost} in {column}")
         out[column] = _as_object(
-            parsed.map(lambda v: None if v is None or np.isnan(v) else round(v, decimals)), frame.index
+            [None if n is None else round(n, decimals) for n in parsed], frame.index
         )
     note = f" Could not read {', '.join(unreadable)}." if unreadable else ""
     return _outcome(
@@ -567,7 +576,8 @@ def normalize_text(frame: pd.DataFrame, params: dict[str, Any], ctx: CleaningCon
         return text
 
     for column in columns:
-        out[column] = _as_object(frame[column].map(clean), frame.index)
+        # A list keeps a blank as None. Series.map would turn that None into NaN.
+        out[column] = _as_object([clean(v) for v in frame[column].tolist()], frame.index)
     return _outcome(frame, out, columns, f"Trimmed spaces and normalised Unicode in {', '.join(columns)}.")
 
 
@@ -577,7 +587,9 @@ def normalize_phones(frame: pd.DataFrame, params: dict[str, Any], ctx: CleaningC
     code = str(params.get("country_code", "27"))
     out = frame.copy()
     for column in columns:
-        out[column] = _as_object(frame[column].map(lambda v: normalise_za_phone(v, code)), frame.index)
+        out[column] = _as_object(
+            [normalise_za_phone(v, code) for v in frame[column].tolist()], frame.index
+        )
     return _outcome(frame, out, columns, f"Wrote {', '.join(columns)} in E.164 form (+{code}…).")
 
 
@@ -624,8 +636,16 @@ def normalise_text_and_phones(
     )
 
 
+def _integer(value: Any) -> int | None:
+    number = parse_number(value)
+    # 1.5 is not an integer. Rounding it would invent a value the cell did not have.
+    if number is None or not float(number).is_integer():
+        return None
+    return int(number)
+
+
 _TYPE_PARSERS: dict[str, Callable[[Any], Any]] = {
-    "integer": lambda v: None if (n := parse_number(v)) is None else int(round(n)),
+    "integer": _integer,
     "decimal": parse_number,
     "date": lambda v: None if (d := parse_date(v)) is None else d.isoformat(),
     "boolean": parse_bool,
@@ -655,7 +675,8 @@ def coerce_types(frame: pd.DataFrame, params: dict[str, Any], ctx: CleaningConte
         parser = _TYPE_PARSERS.get(kind)
         if parser is None:
             raise OperationError(f"Unknown type {kind!r}. Use integer, decimal, date, boolean or string.")
-        out[column] = _as_object(out[column].map(parser), frame.index)
+        # A list keeps None as None. Series.map turns a returned None into NaN.
+        out[column] = _as_object([parser(v) for v in out[column].tolist()], frame.index)
     typed = ", ".join(f"{c} → {t}" for c, t in types.items())
     return _outcome(
         frame,
@@ -709,7 +730,7 @@ def map_values(frame: pd.DataFrame, params: dict[str, Any], ctx: CleaningContext
             return other
         return value
 
-    out[column] = _as_object(frame[column].map(apply), frame.index)
+    out[column] = _as_object([apply(v) for v in frame[column].tolist()], frame.index)
     return _outcome(
         frame, out, [column], f"Mapped {len(mapping)} variant labels in {column} to their official names."
     )
@@ -726,7 +747,8 @@ def cluster_labels(frame: pd.DataFrame, params: dict[str, Any], ctx: CleaningCon
         canonical.setdefault(key, str(value))  # most frequent spelling wins
     out = frame.copy()
     out[column] = _as_object(
-        frame[column].map(lambda v: v if is_blank(v) else canonical.get(fingerprint(v), v)), frame.index
+        [v if is_blank(v) else canonical.get(fingerprint(v), v) for v in frame[column].tolist()],
+        frame.index,
     )
     merged = len(counts) - len(set(canonical.values()))
     return _outcome(
@@ -758,6 +780,12 @@ def rename_columns(frame: pd.DataFrame, params: dict[str, Any], ctx: CleaningCon
             f"New names must be lower case letters, digits and underscores: {', '.join(bad)}"
         )
     out = frame.rename(columns=mapping)
+    # A later mask step still names the old column. Keep the personal-column map on the new name
+    # so silver does not keep the raw value under the rename.
+    for old, new in mapping.items():
+        kind = ctx.pii_columns.pop(old, None)
+        if kind is not None:
+            ctx.pii_columns[new] = kind
     return _outcome(
         frame, out, list(mapping.values()), f"Renamed {', '.join(f'{k} → {v}' for k, v in mapping.items())}."
     )
@@ -796,10 +824,11 @@ def mask_columns(frame: pd.DataFrame, params: dict[str, Any], ctx: CleaningConte
         out = frame.drop(columns=columns)
     for column in columns if method != "drop" else []:
         kind = ctx.pii_columns.get(column, PiiKind.NAME.value)
+        values = frame[column].tolist()
         if method == "hash":
-            out[column] = _as_object(frame[column].map(lambda v: pseudonymise(v, ctx.salt)), frame.index)
+            out[column] = _as_object([pseudonymise(v, ctx.salt) for v in values], frame.index)
         else:
-            out[column] = _as_object(frame[column].map(lambda v, k=kind: mask_value(v, k)), frame.index)
+            out[column] = _as_object([mask_value(v, kind) for v in values], frame.index)
     verb = {"drop": "Dropped", "hash": "Pseudonymised", "redact": "Masked"}.get(method, "Masked")
     summary = f"{verb} {', '.join(columns)}." if columns else "No personal column left to mask."
     if gone:
@@ -898,14 +927,14 @@ def validate_sa_id(frame: pd.DataFrame, params: dict[str, Any], ctx: CleaningCon
         return StepOutcome(
             frame, [], "No ID column remains, so there is nothing to check.", len(frame), len(frame), 0
         )
-    valid = frame[column].map(lambda v: None if is_blank(v) else sa_id_valid(v))
+    valid = [None if is_blank(v) else sa_id_valid(v) for v in frame[column].tolist()]
     action = params.get("action", "flag")
     out = frame.copy()
-    invalid = valid == False  # noqa: E712 - None (blank) is neither valid nor invalid
+    invalid = pd.Series([v is False for v in valid], index=frame.index)
     if action == "drop":
         out = out[~invalid].copy()
         return _outcome(frame, out, [], f"Dropped {int(invalid.sum())} rows with an invalid ID number.")
-    out[f"{column}_valid"] = _as_object(valid.to_numpy(), frame.index)
+    out[f"{column}_valid"] = _as_object(valid, frame.index)
     return _outcome(
         frame,
         out,
@@ -1001,4 +1030,10 @@ def run_operation(
     fn = OPERATIONS.get(name)
     if fn is None:
         raise OperationError(f"Unknown operation {name!r}.")
-    return fn(frame, params, ctx)
+    try:
+        return fn(frame, params, ctx)
+    except OperationError:
+        raise
+    except (ValueError, re.error) as error:
+        # A bad parameter (window "five", a broken regex) is a step failure, not a 500.
+        raise OperationError(str(error)) from error

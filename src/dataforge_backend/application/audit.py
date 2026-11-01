@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..domain.roles import Permission
 from ..infrastructure.db.models import AuditEvent
-from .common import Actor
+from .common import Actor, contains_like
 
 
 async def record(
@@ -99,13 +99,13 @@ async def list_events(
     if until:
         stmt = stmt.where(AuditEvent.occurred_at < until)
     if query:
-        like = f"%{query}%"
+        like = contains_like(query)
         stmt = stmt.where(
             or_(
-                AuditEvent.action.ilike(like),
-                AuditEvent.actor_label.ilike(like),
-                AuditEvent.resource_label.ilike(like),
-                AuditEvent.detail.ilike(like),
+                AuditEvent.action.ilike(like, escape="\\"),
+                AuditEvent.actor_label.ilike(like, escape="\\"),
+                AuditEvent.resource_label.ilike(like, escape="\\"),
+                AuditEvent.detail.ilike(like, escape="\\"),
             )
         )
     total = int((await session.execute(select(func.count()).select_from(stmt.subquery()))).scalar() or 0)
