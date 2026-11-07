@@ -188,6 +188,8 @@ def _rate_sentence(dataset: AnalysisDataset, m: MeasureDef, rate_method: str) ->
         return f"counted distinct {m.column}"
     if not m.is_ratio:
         return f"added up {m.label.lower()}"
+    if m.is_average:
+        return f"averaged {m.numerator} over the rows that have a value"
     denominator = "the row count" if m.denominator == "*" else f"total {m.denominator}"
     if rate_method == "average":
         return f"averaged each row's {m.label.lower()}, giving every row the same weight"
@@ -231,7 +233,7 @@ def _empty(
 
 
 def _denominator_label(dataset: AnalysisDataset, m: MeasureDef) -> str:
-    if m.denominator == "*":
+    if m.denominator in ("*", "#"):
         return "Rows"
     for other in dataset.measures.values():
         if other.column == m.denominator and other.additive:

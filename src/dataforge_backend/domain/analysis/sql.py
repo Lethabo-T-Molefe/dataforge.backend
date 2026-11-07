@@ -59,6 +59,8 @@ def measure_sql(m: MeasureDef, rate_method: str) -> str:
     if m.kind == "distinct":
         return f"COUNT(DISTINCT {ident(m.column or '')})"
     num = ident(m.numerator or "")
+    if m.denominator == "#":
+        return f"AVG({num}::numeric)"
     if m.denominator == "*":
         return (
             f"AVG({num}::numeric)"
@@ -210,6 +212,8 @@ def _summarise(d: _Display) -> str:
 
 def _num_den(m: MeasureDef) -> tuple[str, str]:
     num = f"SUM({ident(m.numerator or '')})"
+    if m.denominator == "#":
+        return num, f"COUNT({ident(m.numerator or '')})"
     den = "COUNT(*)" if m.denominator == "*" else f"SUM({ident(m.denominator or '')})"
     return num, den
 
@@ -348,6 +352,8 @@ def _value_expr(m: MeasureDef, rate_method: str) -> str:
     if m.kind == "distinct":
         return f"COUNT(DISTINCT {t}{ident(m.column or '')})::float8"
     num = f"{t}{ident(m.numerator or '')}"
+    if m.denominator == "#":
+        return f"AVG({num}::float8)"
     if m.denominator == "*":
         return (
             f"AVG({num}::float8)" if rate_method == "average" else f"SUM({num})::float8 / NULLIF(COUNT(*), 0)"
@@ -362,7 +368,12 @@ def _parts_exprs(m: MeasureDef) -> tuple[str, str]:
     """Numerator and denominator totals of a ratio, or the total twice for anything else."""
     if m.is_ratio:
         num = f"SUM(t.{ident(m.numerator or '')})::float8"
-        den = "COUNT(*)::float8" if m.denominator == "*" else f"SUM(t.{ident(m.denominator or '')})::float8"
+        if m.denominator == "#":
+            den = f"COUNT(t.{ident(m.numerator or '')})::float8"
+        else:
+            den = (
+                "COUNT(*)::float8" if m.denominator == "*" else f"SUM(t.{ident(m.denominator or '')})::float8"
+            )
         return num, den
     value = _value_expr(m, "pooled")
     return value, value

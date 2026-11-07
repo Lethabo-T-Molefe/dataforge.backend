@@ -27,7 +27,8 @@ class MeasureDef:
     """A number the analysis can compute.
 
     additive: SUM(column) · count: COUNT(*) · distinct: COUNT(DISTINCT column) ·
-    ratio: numerator ÷ denominator, where the denominator may be "*" for the row count.
+    ratio: numerator ÷ denominator, where the denominator may be "*" for the row count, or "#" for the
+    rows where the numerator is present (an average that blanks do not pull down).
     """
 
     id: str
@@ -52,7 +53,12 @@ class MeasureDef:
 
     def columns(self) -> list[str]:
         names = [self.column, self.numerator, self.denominator]
-        return [name for name in names if name and name != "*"]
+        return [name for name in names if name and name not in ("*", "#")]
+
+    @property
+    def is_average(self) -> bool:
+        """An average of one column: its total over the rows where it has a value."""
+        return self.kind == "ratio" and self.denominator == "#"
 
     def to_dict(self) -> dict[str, Any]:
         return {

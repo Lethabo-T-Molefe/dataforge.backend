@@ -19,6 +19,7 @@ from .values import (
     date_shape,
     fingerprint,
     is_sentinel,
+    map_distinct,
     parse_bool,
     parse_date,
     parse_number,
@@ -51,7 +52,7 @@ class ColumnFacts:
 
 
 def _blank_mask(series: pd.Series) -> pd.Series:
-    return series.map(lambda v: is_sentinel(v)).astype(bool)
+    return map_distinct(series, is_sentinel).astype(bool)
 
 
 def _fmt(value: float | None) -> str | None:
@@ -73,20 +74,20 @@ def infer_type(values: pd.Series, blank: pd.Series | None = None) -> tuple[str, 
     sample = non_blank.sample(n=min(len(non_blank), _SAMPLE_FOR_INFERENCE), random_state=0)
     texts = sample.astype(str).str.strip()
 
-    bools = texts.map(parse_bool)
+    bools = map_distinct(texts, parse_bool)
     bool_share = float(bools.notna().mean())
     if bool_share >= _TYPE_THRESHOLD and texts.str.lower().nunique() <= 4:
         return "boolean", bool_share, None
 
-    numbers = texts.map(parse_number)
+    numbers = map_distinct(texts, parse_number)
     number_share = float(numbers.notna().mean())
-    dates = texts.map(parse_date)
+    dates = map_distinct(texts, parse_date)
     date_share = float(dates.notna().mean())
     # Plain digit strings like 20260314 parse as numbers; a column of real dates wins over that.
     if date_share >= _TYPE_THRESHOLD and date_share >= number_share:
         return "date", date_share, None
     if number_share >= _TYPE_THRESHOLD:
-        full = non_blank.astype(str).map(parse_number)
+        full = map_distinct(non_blank.astype(str), parse_number)
         parsed = full.dropna().astype(float)
         is_integer = bool(len(parsed)) and bool(np.all(np.equal(np.mod(parsed.to_numpy(), 1), 0)))
         # Identifiers (0821234567, a 13-digit ID number) are text even though they are all digits.
@@ -136,7 +137,7 @@ def _patterns(values: pd.Series, blank: pd.Series | None = None) -> list[dict[st
     if non_blank.empty:
         return []
     sample = non_blank.head(_SAMPLE_FOR_INFERENCE)
-    shapes = sample.map(shape)
+    shapes = map_distinct(sample, shape)
     counts = shapes.value_counts()
     total = int(counts.sum())
     scale = len(non_blank) / max(total, 1)
@@ -159,12 +160,17 @@ def _missingness(
     column: str,
     blank: pd.Series,
     blanks: dict[Any, pd.Series] | None = None,
+    texts: dict[Any, pd.Series] | None = None,
+    numbers: dict[Any, pd.Series] | None = None,
 ) -> tuple[str, str, str | None]:
     """Classify how a column's blanks happen by testing the blank indicator against every other column.
 
-    `blanks` holds every column's blank mask, computed once by the caller: without it, each column with blanks
-    would rescan every other column cell by cell, which on a wide table is most of the profiling time.
+    `blanks` holds every column's blank mask, `texts` its stripped text and `numbers` (filled in as needed) its
+    parsed numbers, shared across calls: without them, each column with blanks would rescan every other column
+    cell by cell, which on a wide table is most of the profiling time.
     """
+    texts = {} if texts is None else texts
+    numbers = {} if numbers is None else numbers
     null_share = float(blank.mean())
     if null_share == 0:
         return "none", "Complete.", None
@@ -176,7 +182,9 @@ def _missingness(
             continue
         values = frame[other]
         other_blank = blanks[other] if blanks is not None and other in blanks else _blank_mask(values)
-        observed = values[~other_blank].astype(str).str.strip()
+        if other not in texts:
+            texts[other] = values.astype(str).str.strip()
+        observed = texts[other][~other_blank]
         indicator = blank[~other_blank]
         if observed.empty or indicator.nunique() < 2:
             continue
@@ -192,7 +200,9 @@ def _missingness(
                 top = str(rates.idxmax()) if rates is not None else ""
                 reason = f"{column} is blank more often when {other} is {top}."
             else:
-                numeric = observed.map(parse_number)
+                if other not in numbers:
+                    numbers[other] = map_distinct(texts[other], parse_number)
+                numeric = numbers[other][~other_blank]
                 if numeric.notna().mean() < 0.9:
                     continue
                 a = numeric[indicator.to_numpy()].dropna()
@@ -270,7 +280,10 @@ def _dependencies(frame: pd.DataFrame, candidates: list[str]) -> list[dict[str, 
             tolerance = max(1, int(0.01 * n))
             if len(pair) - int(pair[b].value_counts().iloc[0]) <= tolerance:
                 continue
-            modes = pair.groupby(a)[b].agg(lambda s: s.value_counts().index[0])
+            # The most common b for each a, from one grouped count instead of a value count per group.
+            counts = pair.groupby([a, b], sort=False).size().reset_index(name="_n")
+            counts = counts.sort_values("_n", ascending=False, kind="stable").drop_duplicates(subset=[a])
+            modes = counts.set_index(a)[b]
             violations = int((pair[b] != pair[a].map(modes)).sum())
             if violations == 0:
                 results.append(
@@ -341,16 +354,18 @@ def profile_frame(
     counted = 0
     # Each column's blanks, found once and reused by every check that needs them.
     blanks = {column: _blank_mask(frame[column]) for column in frame.columns}
+    texts = {column: frame[column].astype(str).str.strip() for column in frame.columns}
+    numbers: dict[Any, pd.Series] = {}
 
     for column in frame.columns:
         name = str(column)
         series = frame[column]
         blank = blanks[column]
-        sentinels = int((blank & series.notna() & (series.astype(str).str.strip() != "")).sum())
+        sentinels = int((blank & series.notna() & (texts[column] != "")).sum())
         nulls = int(blank.sum())
         blank_cells += nulls
         inferred, conformance, numeric = infer_type(series, blank)
-        non_blank = series[~blank].astype(str).str.strip()
+        non_blank = texts[column][~blank]
         distinct = int(non_blank.nunique())
         conforming += int(round(conformance * (n - nulls)))
         counted += n - nulls
@@ -398,7 +413,7 @@ def profile_frame(
             column_facts.outliers = int(_outlier_mask(numeric).sum())
             entry["outliers"] = column_facts.outliers
         if inferred in ("date", "mixed"):
-            shapes = Counter(s for s in non_blank.head(_SAMPLE_FOR_INFERENCE).map(date_shape) if s)
+            shapes = Counter(s for s in map_distinct(non_blank.head(_SAMPLE_FOR_INFERENCE), date_shape) if s)
             column_facts.date_shapes = dict(shapes)
             entry["dateFormats"] = dict(shapes.most_common())
         if inferred == "string" and distinct <= 300:
@@ -411,7 +426,7 @@ def profile_frame(
         ]
         entry["patterns"] = [] if finding else _patterns(series, blank)
         if 0 < nulls < n:
-            missingness, note, depends_on = _missingness(frame, column, blank, blanks)
+            missingness, note, depends_on = _missingness(frame, column, blank, blanks, texts, numbers)
         elif nulls == 0:
             missingness, note, depends_on = "none", "Complete.", None
         else:
@@ -535,8 +550,7 @@ def column_summaries(frame: pd.DataFrame, profile: dict[str, Any]) -> list[dict[
     for entry in profile["columns"]:
         name = entry["name"]
         series = frame[name] if name in frame.columns else pd.Series(dtype=object)
-        sample_values = [v for v in series.dropna().astype(str).str.strip() if v and not is_sentinel(v)]
-        sample = sample_values[0] if sample_values else ""
+        sample = next((v for v in series.dropna().astype(str).str.strip() if v and not is_sentinel(v)), "")
         if entry["masked"] and sample:
             sample = mask_value(sample, entry["piiKind"] or PiiKind.NAME) or ""
         summaries.append(

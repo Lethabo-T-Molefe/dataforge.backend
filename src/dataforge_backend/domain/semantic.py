@@ -30,6 +30,51 @@ _MONEY_WORDS = (
     "value_zar",
 )
 _RATE_WORDS = ("rate", "ratio", "share", "pct", "percent")
+# Columns whose total means something (money, counts of things). Every other number is a measurement
+# (age, a score, a blood pressure, a duration): adding it up across rows is meaningless, so it is averaged.
+_TOTAL_WORDS = (
+    *_MONEY_WORDS,
+    "total",
+    "count",
+    "qty",
+    "quantity",
+    "units",
+    "items",
+    "purchases",
+    "orders",
+    "sales",
+    "calls",
+    "visits",
+    "sessions",
+    "clicks",
+    "views",
+    "enrol",
+    "students",
+    "learners",
+    "members",
+    "tickets",
+    "reviews",
+    "transactions",
+    "bookings",
+    "hours_worked",
+    "value",
+)
+_AVERAGE_WORDS = (
+    "average",
+    "avg",
+    "mean",
+    "median",
+    *_RATE_WORDS,
+    "score",
+    "rating",
+    "age",
+    "per_",
+    "years",
+    "duration",
+    "days",
+    "frequency",
+    "balance",
+)
 
 
 class MetricError(ValueError):
@@ -159,6 +204,15 @@ def _guess_unit(column: ColumnInfo) -> str:
     return "count" if column.type in ("integer", "bigint", "smallint") else "decimal"
 
 
+def is_measurement(name: str) -> bool:
+    """Whether a numeric column is averaged rather than added up (see _TOTAL_WORDS)."""
+    words = set(re.split(r"[^a-z0-9]+", name.lower()))
+    lowered = name.lower()
+    if any(word in lowered for word in _AVERAGE_WORDS if len(word) > 3) or words & {"age", "avg", "pct"}:
+        return True
+    return not any(word in lowered for word in _TOTAL_WORDS)
+
+
 def _looks_like_identifier(column: ColumnInfo, rows: int) -> bool:
     lowered = column.name.lower()
     return (
@@ -211,6 +265,20 @@ def derive_fields(columns: list[ColumnInfo], rows: int, metrics: list[MetricSpec
             continue
         covered = any(m.kind == "additive" and m.column == column.name for m in out.measures.values())
         if covered:
+            continue
+        if is_measurement(column.name):
+            label = humanise(column.name)
+            out.measures[column.name] = MeasureDef(
+                id=column.name,
+                label=label
+                if label.lower().startswith(("average", "avg", "mean"))
+                else f"Average {label.lower()}",
+                unit=_guess_unit(column) if _guess_unit(column) in ("money", "rate") else "decimal",
+                kind="ratio",
+                description=f"Average of {column.name} over the rows that have a value. Not a shared metric.",
+                numerator=column.name,
+                denominator="#",
+            )
             continue
         out.measures[column.name] = MeasureDef(
             id=column.name,

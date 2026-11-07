@@ -2,10 +2,12 @@
 
 import math
 import re
+from collections.abc import Callable
 from datetime import date, datetime
 from functools import lru_cache
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 SENTINELS = frozenset(
@@ -62,6 +64,20 @@ def is_sentinel(value: Any, *, include_numeric: bool = False) -> bool:
         return True
     text = str(value).strip().lower()
     return text in SENTINELS or (include_numeric and text in NUMERIC_SENTINELS)
+
+
+def map_distinct(series: pd.Series, fn: Callable[[Any], Any]) -> pd.Series:
+    """`series.map(fn)`, calling `fn` once per distinct value instead of once per cell.
+
+    Real columns repeat a small set of values (countries, flags, ratings), so on a 50 000-row upload this turns
+    millions of parser calls into thousands.
+    """
+    if series.empty:
+        return series.map(fn)
+    codes, uniques = pd.factorize(series, use_na_sentinel=False)
+    mapped = np.empty(len(uniques), dtype=object)
+    mapped[:] = [fn(value) for value in uniques]
+    return pd.Series(mapped[codes], index=series.index, dtype=object).infer_objects()
 
 
 def thousands(value: float | int) -> str:
@@ -130,6 +146,8 @@ def parse_date(value: Any, *, day_first: bool = True) -> date | None:
 
 
 _ISO_DATE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
+# 27.4, -3, 1250,5: every date format below needs two separators or a month name, so these can never match.
+_PLAIN_NUMBER = re.compile(r"^[+-]?\d+(?:[.,]\d+)?$")
 
 
 @lru_cache(maxsize=200_000)
@@ -140,7 +158,7 @@ def _parse_date_text(raw: str, day_first: bool) -> date | None:
             return date(int(iso.group(1)), int(iso.group(2)), int(iso.group(3)))
         except ValueError:
             return None
-    if not any(ch.isdigit() for ch in raw):
+    if not any(ch.isdigit() for ch in raw) or _PLAIN_NUMBER.match(raw):
         return None
     text = re.sub(r"\s+", " ", raw)
     text = re.sub(r"(\d)(st|nd|rd|th)\b", r"\1", text)

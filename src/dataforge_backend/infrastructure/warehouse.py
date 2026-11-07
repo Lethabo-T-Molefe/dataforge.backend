@@ -201,13 +201,17 @@ async def column_infos(
 ) -> tuple[list[ColumnInfo], int]:
     """Distinct counts and most common values per column, for deriving analysis fields."""
     types = await column_types(conn, table)
-    rows = int((await conn.execute(text(f"SELECT COUNT(*) FROM {qualified(table)}"))).scalar() or 0)
+    # The row count and every column's distinct count in one scan and one round trip: the database is often
+    # far from the API, and a query per column made this most of an upload's database time.
+    counts = [f"COUNT(DISTINCT {ident(name)})" for name in types]
+    totals = (
+        await conn.execute(text(f"SELECT {', '.join(['COUNT(*)', *counts])} FROM {qualified(table)}"))
+    ).one()
+    rows = int(totals[0] or 0)
     infos: list[ColumnInfo] = []
-    for name, kind in types.items():
+    for index, (name, kind) in enumerate(types.items(), start=1):
         col = ident(name)
-        distinct = int(
-            (await conn.execute(text(f"SELECT COUNT(DISTINCT {col}) FROM {qualified(table)}"))).scalar() or 0
-        )
+        distinct = int(totals[index] or 0)
         values: tuple[str, ...] = ()
         month_like = False
         if kind in ("text", "boolean") and 0 < distinct <= 200:
