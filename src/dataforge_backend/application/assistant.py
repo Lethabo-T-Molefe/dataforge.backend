@@ -28,18 +28,12 @@ from ..domain.assistant import (
     previous_prompt,
     refusal,
 )
-from ..domain.overview import (
-    fallback_narrative,
-    overview_facts,
-    overview_table,
-    schema_prompt,
-    wants_overview,
-)
+from ..domain.qualitative import Route, early_route, is_general
 from ..domain.roles import Permission
 from ..domain.sql_guard import QueryRefused
 from ..infrastructure import llm
 from ..infrastructure.db.models import AssistantQuery, Dataset, MetricDefinition
-from . import analysis, audit, catalogue, quotas
+from . import analysis, audit, catalogue, qualitative, quotas
 from .common import Actor, humanize
 
 log = get_logger(__name__)
@@ -185,44 +179,8 @@ def _explanation(plan: AssistantPlan, dataset: AnalysisDataset, result: dict[str
     return " ".join(p for p in parts if p)
 
 
-async def _overview(
-    session: AsyncSession, cat: Catalogue, record: AssistantQuery, lead: str | None = None
-) -> str | None:
-    """Fill `record` with an overview of the one dataset in scope. Returns the model that wrote it, if any.
-
-    Built from the profile taken at upload, so nothing is queried. Returns without filling `record` when more
-    than one dataset is in scope (the member has not chosen one) or the dataset has no profile.
-    """
-    if len(cat.datasets) != 1:
-        return None
-    analysis_dataset = next(iter(cat.datasets.values()))
-    dataset = await session.get(Dataset, analysis_dataset.id)
-    if dataset is None or not dataset.profile:
-        return None
-    profile = dataset.profile
-    model: str | None = None
-    try:
-        narrative, model = await llm.describe_dataset(
-            schema_prompt(dataset.name, dataset.description or "", profile)
-        )
-    except llm.PlanUnavailable as error:
-        log.info("assistant_overview_without_model", reason=str(error))
-        narrative = fallback_narrative(dataset.name, profile)
-    examples = [q for q in cat.example_questions() if "rows are there" not in q][:3]
-    ask_next = f" Try asking: {' · '.join(examples)}" if examples else ""
-    record.answer = f"{lead} {narrative}" if lead else narrative
-    record.explanation = (
-        f"{overview_facts(profile, dataset.pii_columns or {})} "
-        f"This overview comes from the profile taken when {dataset.name} was brought in; no query ran.{ask_next}"
-    )
-    record.result_table = overview_table(profile)
-    record.grounded_in = ["Dataset profile", analysis_dataset.table]
-    record.plan = None
-    record.refused = False
-    record.refusal_reason = None
-    record.sql = ""
-    record.planner = "model" if model else "rules"
-    return model or ""
+def _examples(cat: Catalogue) -> list[str]:
+    return [q for q in cat.example_questions() if "rows are there" not in q]
 
 
 def turn_dict(q: AssistantQuery) -> dict[str, Any]:
@@ -272,17 +230,24 @@ async def ask(
         )
 
     previous = await _previous(session, actor, context_id, cat)
-    # "What is this dataset about?" is answered with an overview, unless the question also names a number
-    # the rules can compute ("insights on revenue by region" still runs the analysis).
-    if wants_overview(question) and len(cat.datasets) == 1:
-        first = plan_question(question, cat, previous[0] if previous else None)
-        if isinstance(first, Refusal) and first.reason not in ("injection", "personal"):
+    # Questions that are not about a number (how two categories relate, what people wrote, what the dataset
+    # is) go to the qualitative answers. Safety refusals (personal details, injection) still come first.
+    target = qualitative.in_scope(cat)
+    first = plan_question(question, cat, previous[0] if previous else None)
+    safe = not (isinstance(first, Refusal) and first.reason in ("injection", "personal"))
+    if target is not None and safe:
+        row = await session.get(Dataset, target.id)
+        early = early_route(question, row.profile) if row is not None and row.profile else None
+        if early is None and isinstance(first, Refusal) and is_general(question):
+            early = Route("overview")
+        if early is not None:
             record = AssistantQuery(user_id=actor.member_id, question=question, channel=channel)
-            overview_model = await _overview(session, cat, record)
-            if overview_model is not None:
-                return await _finish(
-                    session, actor, record, question, started, record.planner, overview_model, channel
-                )
+            used = await qualitative.respond(
+                session, actor, target, early, question, record, examples=_examples(cat)
+            )
+            if used is not None:
+                record.planner = "model" if used else "rules"
+                return await _finish(session, actor, record, question, started, record.planner, used, channel)
 
     planned, planner, model = await _plan(question, cat, previous)
     record = AssistantQuery(user_id=actor.member_id, question=question, planner=planner, channel=channel)
@@ -327,18 +292,31 @@ async def ask(
                     **({"measureY": config.measure_y} if planned.method == "relationship" else {}),
                 }
 
-    if isinstance(planned, Refusal) and planned.reason == "ungrounded" and dataset_id:
-        # The member chose a dataset: describe it and what can be asked, rather than a flat refusal.
-        overview_model = await _overview(
-            session,
-            cat,
-            record,
-            lead="I couldn't turn that into a calculation on this dataset, so here is what it holds.",
-        )
-        if overview_model is not None:
-            return await _finish(
-                session, actor, record, question, started, record.planner, overview_model or model, channel
+    if isinstance(planned, Refusal) and planned.reason == "ungrounded" and target is not None:
+        # Not a calculation: let the model say what kind of question it is (a cross-tab, text themes, a
+        # question about the dataset itself) and answer that, rather than refusing.
+        row = await session.get(Dataset, target.id)
+        if row is not None and row.profile:
+            routed, route_model = await qualitative.route(question, row)
+            used = await qualitative.respond(
+                session,
+                actor,
+                target,
+                routed,
+                question,
+                record,
+                examples=_examples(cat),
+                lead=(
+                    "I couldn't turn that into a calculation on this dataset, so here is what it holds."
+                    if routed.kind == "overview"
+                    else None
+                ),
             )
+            if used is not None:
+                record.planner = "model" if (used or route_model) else "rules"
+                return await _finish(
+                    session, actor, record, question, started, record.planner, used or route_model, channel
+                )
 
     if isinstance(planned, Refusal):
         record.refused = True

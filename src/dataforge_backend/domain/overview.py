@@ -87,9 +87,25 @@ def fallback_narrative(name: str, profile: dict[str, Any]) -> str:
     """A plain description when no model is available."""
     columns = profile.get("columns") or []
     numbers = [c for c in columns if c.get("inferredType") in _NUMERIC and not c.get("masked")]
-    labels = [c for c in columns if c.get("inferredType") in ("string", "boolean") and not c.get("masked")]
+    labels = [
+        c
+        for c in columns
+        if c.get("inferredType") in ("string", "boolean")
+        and not c.get("masked")
+        and int(c.get("distinct") or 0) <= 60
+    ]
+    written = [
+        c
+        for c in columns
+        if c.get("inferredType") == "string"
+        and not c.get("masked")
+        and int(c.get("distinct") or 0) > 60
+        and int(c.get("lengthMax") or 0) >= 25
+    ]
     dates = [c for c in columns if c.get("inferredType") == "date" and not c.get("masked")]
     parts = [f"{name} has {thousands(int(profile.get('rows', 0)))} rows and {len(columns)} columns."]
+    if written:
+        parts.append(f"People wrote free text in {_names(written, 2)}, which can be read for themes.")
     if labels:
         parts.append(f"Rows are described by {_names(labels)}.")
     if numbers:

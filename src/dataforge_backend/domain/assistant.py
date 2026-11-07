@@ -26,7 +26,9 @@ _INJECTION = re.compile(
     re.IGNORECASE,
 )
 _PERSONAL = re.compile(
-    r"\b(who\s+(is|are|was|were)|whose|full[_\s]?names?|names?\s+of|id\s*numbers?|identity\s+numbers?|e-?mails?|"
+    r"\b(who\s+(is|are|was|were)|whose|full[_\s]?names?|names?\s+of|(their|his|her|customers?'?|people'?s?|"
+    r"learners?'?|students?'?|members?'?|users?'?|clients?'?|employees?'?|patients?'?)\s+names?|"
+    r"(first|last|sur)\s?names?|id\s*numbers?|identity\s+numbers?|e-?mails?|"
     r"phone|cell\s*numbers?|addresses|home\s+address|which\s+(learners|students|people|members|individuals|customers)|"
     r"list\s+(all\s+|the\s+)?(learners|students|people|members|individuals|customers)|personal\s+(data|details|information))\b",
     re.IGNORECASE,
