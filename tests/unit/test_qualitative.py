@@ -145,3 +145,13 @@ def test_profile_questions_are_answered_without_a_model() -> None:
         "It has 6 columns and 400 rows"
     )
     assert profile_answer("Why do customers leave?", PROFILE) is None
+
+
+def test_a_real_category_called_other_keeps_its_own_counts() -> None:
+    rows = [("Female", "0", 70), ("Female", "1", 30), ("Other", "0", 6), ("Other", "1", 4)]
+    read = crosstab(rows, "gender", "churned")
+    assert read["table"]["rows"][1] == ["Other", "60.0% (6)", "40.0% (4)", "10"]
+    many = [(f"r{n:02d}", "x", 100 - n) for n in range(15)] + [(f"r{n:02d}", "y", 5) for n in range(15)]
+    folded = crosstab(many, "region", "plan")["table"]["rows"]
+    assert len(folded) == 13 and folded[-1][0] == "All other region values"
+    assert folded[-1][-1] == str(sum(100 - n + 5 for n in range(12, 15)))

@@ -312,20 +312,26 @@ def crosstab(rows: list[tuple[Any, Any, Any]], a: str, b: str) -> dict[str, Any]
             f"{low_expected:.0%} of the cells would expect fewer than 5 rows, so read the p-value with care."
         )
 
-    shown = table.iloc[:_TABLE_ROWS, :_TABLE_COLUMNS]
+    # Row percentages use each row's total over every column, including columns not shown. Categories past the
+    # first few are folded into one extra row, which is kept apart from any real category called "Other".
+    groups: list[tuple[str, pd.Series, int]] = [
+        (str(label), table.loc[label].iloc[:_TABLE_COLUMNS], int(table.loc[label].sum()))
+        for label in table.index[:_TABLE_ROWS]
+    ]
     if table.shape[0] > _TABLE_ROWS:
-        rest = table.iloc[_TABLE_ROWS:, :_TABLE_COLUMNS].sum(axis=0)
-        shown = pd.concat([shown, rest.to_frame("Other").T])
-    row_totals = table.sum(axis=1)
-    out_rows = []
-    for label, counts in shown.iterrows():
-        n = (
-            int(row_totals.get(label, counts.sum()))
-            if label != "Other"
-            else int(table.iloc[_TABLE_ROWS:].to_numpy().sum())
+        rest = table.iloc[_TABLE_ROWS:]
+        groups.append(
+            (
+                f"All other {label_a} values",
+                rest.iloc[:, :_TABLE_COLUMNS].sum(axis=0),
+                int(rest.to_numpy().sum()),
+            )
         )
+    out_rows = []
+    for label, counts, n in groups:
         cells = [f"{(int(v) / n if n else 0):.1%} ({thousands(int(v))})" for v in counts]
-        out_rows.append([str(label), *cells, thousands(n)])
+        out_rows.append([label, *cells, thousands(n)])
+    shown = table.iloc[:, :_TABLE_COLUMNS]
     columns = [label_a.capitalize(), *[f"{label_b.capitalize()}: {c}" for c in shown.columns], "Rows"]
     if table.shape[1] > _TABLE_COLUMNS:
         explanation_parts.append(f"The table shows the {_TABLE_COLUMNS} most common values of {label_b}.")
