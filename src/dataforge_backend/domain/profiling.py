@@ -62,9 +62,12 @@ def _fmt(value: float | None) -> str | None:
     return f"{value:.2f}"
 
 
-def infer_type(values: pd.Series) -> tuple[str, float, pd.Series | None]:
-    """Infer a column's real type from its non-blank values. Returns (type, conformance, numeric values)."""
-    non_blank = values[~_blank_mask(values)]
+def infer_type(values: pd.Series, blank: pd.Series | None = None) -> tuple[str, float, pd.Series | None]:
+    """Infer a column's real type from its non-blank values. Returns (type, conformance, numeric values).
+
+    `blank` is the column's blank mask when the caller already has it.
+    """
+    non_blank = values[~(_blank_mask(values) if blank is None else blank)]
     if non_blank.empty:
         return "empty", 1.0, None
     sample = non_blank.sample(n=min(len(non_blank), _SAMPLE_FOR_INFERENCE), random_state=0)
@@ -128,8 +131,8 @@ def _outlier_mask(numeric: pd.Series) -> pd.Series:
     return far.fillna(False).astype(bool)
 
 
-def _patterns(values: pd.Series) -> list[dict[str, Any]]:
-    non_blank = values[~_blank_mask(values)].astype(str).str.strip()
+def _patterns(values: pd.Series, blank: pd.Series | None = None) -> list[dict[str, Any]]:
+    non_blank = values[~(_blank_mask(values) if blank is None else blank)].astype(str).str.strip()
     if non_blank.empty:
         return []
     sample = non_blank.head(_SAMPLE_FOR_INFERENCE)
@@ -151,8 +154,17 @@ def _patterns(values: pd.Series) -> list[dict[str, Any]]:
     return rows
 
 
-def _missingness(frame: pd.DataFrame, column: str, blank: pd.Series) -> tuple[str, str, str | None]:
-    """Classify how a column's blanks happen by testing the blank indicator against every other column."""
+def _missingness(
+    frame: pd.DataFrame,
+    column: str,
+    blank: pd.Series,
+    blanks: dict[Any, pd.Series] | None = None,
+) -> tuple[str, str, str | None]:
+    """Classify how a column's blanks happen by testing the blank indicator against every other column.
+
+    `blanks` holds every column's blank mask, computed once by the caller: without it, each column with blanks
+    would rescan every other column cell by cell, which on a wide table is most of the profiling time.
+    """
     null_share = float(blank.mean())
     if null_share == 0:
         return "none", "Complete.", None
@@ -163,7 +175,7 @@ def _missingness(frame: pd.DataFrame, column: str, blank: pd.Series) -> tuple[st
         if other == column:
             continue
         values = frame[other]
-        other_blank = _blank_mask(values)
+        other_blank = blanks[other] if blanks is not None and other in blanks else _blank_mask(values)
         observed = values[~other_blank].astype(str).str.strip()
         indicator = blank[~other_blank]
         if observed.empty or indicator.nunique() < 2:
@@ -303,9 +315,9 @@ def _candidate_keys(frame: pd.DataFrame, candidates: list[str]) -> list[str]:
     return []
 
 
-def _variant_groups(values: pd.Series) -> int:
+def _variant_groups(values: pd.Series, blank: pd.Series | None = None) -> int:
     """How many labels have a spelling variant that means the same thing (GP / gp / G.P.)."""
-    observed = values[~_blank_mask(values)].astype(str).str.strip()
+    observed = values[~(_blank_mask(values) if blank is None else blank)].astype(str).str.strip()
     distinct = observed.unique()
     if len(distinct) > 300:
         return 0
@@ -327,15 +339,17 @@ def profile_frame(
     blank_cells = 0
     conforming = 0
     counted = 0
+    # Each column's blanks, found once and reused by every check that needs them.
+    blanks = {column: _blank_mask(frame[column]) for column in frame.columns}
 
     for column in frame.columns:
         name = str(column)
         series = frame[column]
-        blank = _blank_mask(series)
+        blank = blanks[column]
         sentinels = int((blank & series.notna() & (series.astype(str).str.strip() != "")).sum())
         nulls = int(blank.sum())
         blank_cells += nulls
-        inferred, conformance, numeric = infer_type(series)
+        inferred, conformance, numeric = infer_type(series, blank)
         non_blank = series[~blank].astype(str).str.strip()
         distinct = int(non_blank.nunique())
         conforming += int(round(conformance * (n - nulls)))
@@ -388,16 +402,16 @@ def profile_frame(
             column_facts.date_shapes = dict(shapes)
             entry["dateFormats"] = dict(shapes.most_common())
         if inferred == "string" and distinct <= 300:
-            column_facts.variant_groups = _variant_groups(series)
+            column_facts.variant_groups = _variant_groups(series, blank)
             entry["labelVariants"] = column_facts.variant_groups
         top = non_blank.value_counts().head(5)
         entry["topValues"] = [
             {"value": "(masked)" if finding else str(value)[:60], "count": int(count)}
             for value, count in top.items()
         ]
-        entry["patterns"] = [] if finding else _patterns(series)
+        entry["patterns"] = [] if finding else _patterns(series, blank)
         if 0 < nulls < n:
-            missingness, note, depends_on = _missingness(frame, name, blank)
+            missingness, note, depends_on = _missingness(frame, column, blank, blanks)
         elif nulls == 0:
             missingness, note, depends_on = "none", "Complete.", None
         else:

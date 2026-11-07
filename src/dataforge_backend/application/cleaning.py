@@ -659,6 +659,14 @@ def _clean_full(bronze: pd.DataFrame, specs: list[RecipeStepSpec], ctx: Cleaning
     }
 
 
+def _mask_and_type(bronze: pd.DataFrame, ctx: CleaningContext) -> dict[str, Any]:
+    """The working copy: personal columns masked and types inferred exactly as a cleaning run does, but no
+    cleaning step and no second quality profile (the upload has just profiled the same data)."""
+    out, _masked = enforce_masking(bronze, ctx.pii_columns)
+    typed, types = type_for_silver(out.reset_index(drop=True))
+    return {"frame": typed, "types": types}
+
+
 async def prepare_working_copy(session: AsyncSession, actor: Actor, dataset: Dataset) -> bool:
     """Write a masked, typed copy of the raw data to silver so the owner can analyse it straight away.
 
@@ -674,9 +682,8 @@ async def prepare_working_copy(session: AsyncSession, actor: Actor, dataset: Dat
             bronze = await _load_bronze(session, dataset)
             ctx = await _context(session, actor, dataset, list(bronze.columns))
             result, elapsed = await sandbox.run_python(
-                _clean_full,
+                _mask_and_type,
                 bronze,
-                [],
                 ctx,
                 user_id=actor.member_id,
                 kind="cleaning",

@@ -47,6 +47,8 @@ _NOT_PERSON_NAMES = re.compile(
     r"(course|product|dataset|file|table|column|region|company|org|team|metric|user_?name)"
 )
 
+# A measurement such as 17.9, 42 or 46.4%: too short to be a phone, ID or card number, and not an address.
+_MEASUREMENT = re.compile(r"^-?\d{1,6}([.,]\d+)?%?$")
 _EMAIL = re.compile(r"^[\w.+-]+@[\w-]+(\.[\w-]+)+$")
 _PHONE = re.compile(r"^(\+?27|0)[\s-]?\d{2}[\s-]?\d{3}[\s-]?\d{4}$")
 _CARD = re.compile(r"^\d{13,19}$")
@@ -58,7 +60,11 @@ def detect_pii(frame: pd.DataFrame, sample_size: int = 500) -> list[PiiFinding]:
     for column in frame.columns:
         name = str(column).lower()
         values = [str(v).strip() for v in frame[column].dropna().head(sample_size) if not is_blank(v)]
-        finding = _by_values(str(column), values) or _by_name(str(column), name)
+        finding = _by_values(str(column), values)
+        # The name alone is only a hint: "email_open_rate" or "mobile_app_usage" full of plain measurements
+        # names a behaviour, not a person, so the name rule does not mask it.
+        if finding is None and not _measurements(values):
+            finding = _by_name(str(column), name)
         if finding:
             findings.append(finding)
     return findings
@@ -71,6 +77,11 @@ def _by_name(column: str, name: str) -> PiiFinding | None:
                 continue
             return PiiFinding(column, kind, 0.7, f"The column name suggests {kind.value.replace('_', ' ')}.")
     return None
+
+
+def _measurements(values: list[str]) -> bool:
+    """Nearly every value is a plain number short enough that it cannot be a phone, ID or card number."""
+    return len(values) >= 3 and _share(values, lambda v: bool(_MEASUREMENT.match(v))) >= 0.9
 
 
 def _share(values: list[str], test: Any) -> float:
