@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.config import settings
 from ..core.errors import Forbidden, NotFound, ValidationFailed
+from ..core.logging import get_logger
 from ..core.security import utcnow
 from ..domain.analysis.sql import ident
 from ..domain.cleaning import (
@@ -43,8 +44,10 @@ from ..infrastructure import warehouse
 from ..infrastructure.db.models import CleaningRecipe, CleaningStep, Dataset, LineageEdge
 from . import audit, catalogue, inbox, quotas
 from .common import Actor, humanize
-from .datasets import get_visible, record_version, sync_superset_later
+from .datasets import get_visible, record_version, refresh_fields, sync_superset_later
 from .runtime import sandbox
+
+log = get_logger(__name__)
 
 SAMPLE_ROWS = 400
 _STUDIO_CACHE: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
@@ -656,6 +659,48 @@ def _clean_full(bronze: pd.DataFrame, specs: list[RecipeStepSpec], ctx: Cleaning
     }
 
 
+async def prepare_working_copy(session: AsyncSession, actor: Actor, dataset: Dataset) -> bool:
+    """Write a masked, typed copy of the raw data to silver so the owner can analyse it straight away.
+
+    No cleaning step runs: personal columns are masked and types inferred exactly as a cleaning run does, so
+    raw bronze is never read by an analysis. The dataset stays in bronze (still to be cleaned, if the owner
+    wants to), and only its owner can query the copy until it is cleaned and approved. Runs in a savepoint:
+    if it fails, the upload still succeeds and the owner can clean the data as before. Returns whether it worked.
+    """
+    if dataset.layer != Layer.BRONZE.value or not dataset.owner_id:
+        return False
+    try:
+        async with session.begin_nested():
+            bronze = await _load_bronze(session, dataset)
+            ctx = await _context(session, actor, dataset, list(bronze.columns))
+            result, elapsed = await sandbox.run_python(
+                _clean_full,
+                bronze,
+                [],
+                ctx,
+                user_id=actor.member_id,
+                kind="cleaning",
+                description=f"Masked working copy of {dataset.name}",
+                timeout_s=900,
+                isolated=True,
+            )
+            frame: pd.DataFrame = result["frame"]
+            if frame.empty or not len(frame.columns):
+                return False
+            conn = await session.connection()
+            await warehouse.write_typed(conn, "silver", dataset.table_name, frame, result["types"])
+            await warehouse.grant_sandbox(conn, f"silver.{dataset.table_name}")
+            dataset.quality = {**(dataset.quality or {}), "workingCopy": True}
+            await refresh_fields(session, dataset)
+    except Exception as error:  # noqa: BLE001 - analysis-ready is a convenience; the upload must not fail
+        log.warning("working_copy_failed", dataset=dataset.id, error=str(error))
+        dataset.quality = {k: v for k, v in (dataset.quality or {}).items() if k != "workingCopy"}
+        dataset.fields = None
+        return False
+    await quotas.add_compute(session, actor.member_id, elapsed)
+    return True
+
+
 async def _apply(
     session: AsyncSession, actor: Actor, dataset: Dataset, recipe: CleaningRecipe, *, commit: bool = True
 ) -> dict[str, Any]:
@@ -686,7 +731,6 @@ async def _apply(
 
     conn = await session.connection()
     silver = f"silver.{dataset.table_name}"
-    was_granted = dataset.status == DatasetStatus.APPROVED.value
     rows = await warehouse.write_typed(conn, "silver", dataset.table_name, frame, result["types"])
     if dataset.layer == Layer.GOLD.value:
         await warehouse.drop_table(conn, f"gold.{dataset.table_name}")
@@ -701,8 +745,10 @@ async def _apply(
     dataset.size_bytes = await warehouse.table_size(conn, silver) + await warehouse.table_size(
         conn, _bronze_table(dataset)
     )
-    if was_granted:
-        await warehouse.revoke_sandbox(conn, silver)
+    # The owner keeps analysing their cleaned data while it waits for a decision; everyone else waits for
+    # approval (application.common.is_owner_queryable). The sandbox stays read-only and masked either way.
+    await warehouse.grant_sandbox(conn, silver)
+    await refresh_fields(session, dataset)
 
     recipe.status = "applied"
     recipe.applied_at = utcnow()
@@ -748,7 +794,7 @@ async def _apply(
             await inbox.stewards(session),
             "approval",
             f"{dataset.name} is ready for review",
-            f"{actor.name} cleaned it into {count} rows. Nobody can query it until it is approved.",
+            f"{actor.name} cleaned it into {count} rows. Only its owner can query it until it is approved.",
             f"/datasets/{dataset.id}",
             skip=actor.id,
         )

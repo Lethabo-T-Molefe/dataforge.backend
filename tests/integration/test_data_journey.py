@@ -34,8 +34,17 @@ async def test_upload_clean_approve_and_analyse(client: AsyncClient, sign_in: Si
     assert dataset["classification"] == "restricted-personal"
     assert set(dataset["piiColumns"]) >= {"full_name", "id_number"}
     assert all("•" in c["sample"] for c in dataset["columns"] if c["name"] in ("full_name", "id_number"))
-    assert dataset["nextStep"]["kind"] == "clean"
+    # The owner can analyse it straight away: cleaning and approval are optional for their own analysis.
+    assert dataset["nextStep"]["kind"] == "analyse" and dataset["queryable"] is True
+    assert dataset["table"].startswith("silver."), dataset["table"]
     dataset_id = dataset["id"]
+    count_sql = {"sql": f"SELECT COUNT(*) AS n FROM {dataset['table']}"}
+    early = (await client.post("/api/v1/sql/run", headers=analyst, json=count_sql)).json()
+    assert early.get("refused") is not True and early["rows"] == [[80]], early
+    # Nobody else can, even though it is visible to the organisation, until it is cleaned and approved.
+    practitioner = await sign_in("practitioner")
+    other = (await client.post("/api/v1/sql/run", headers=practitioner, json=count_sql)).json()
+    assert other["refused"] is True, other
 
     rows = (await client.get(f"/api/v1/datasets/{dataset_id}/rows?layer=bronze", headers=analyst)).json()
     name_index = rows["columns"].index("full_name")
@@ -64,10 +73,11 @@ async def test_upload_clean_approve_and_analyse(client: AsyncClient, sign_in: Si
     result = run.json()
     assert result["table"].startswith("silver.") and result["rows"] == 80 and result["checksum"]
 
-    # Not queryable until a steward approves it.
-    blocked = await client.post(
-        "/api/v1/sql/run", headers=analyst, json={"sql": f"SELECT COUNT(*) FROM {result['table']}"}
-    )
+    # The owner keeps analysing the cleaned table while it waits; everyone else waits for approval.
+    cleaned_sql = {"sql": f"SELECT COUNT(*) AS n FROM {result['table']}"}
+    owner_view = (await client.post("/api/v1/sql/run", headers=analyst, json=cleaned_sql)).json()
+    assert owner_view.get("refused") is not True and owner_view["rows"] == [[80]], owner_view
+    blocked = await client.post("/api/v1/sql/run", headers=practitioner, json=cleaned_sql)
     assert blocked.json()["refused"] is True
 
     steward = await sign_in("steward")

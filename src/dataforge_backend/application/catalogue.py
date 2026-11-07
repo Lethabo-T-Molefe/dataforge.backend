@@ -83,7 +83,8 @@ def column_infos(fields: dict[str, Any]) -> list[ColumnInfo]:
 
 
 def analysis_dataset(dataset: Dataset, metrics: list[MetricSpec]) -> AnalysisDataset | None:
-    if not dataset.fields or not is_queryable(dataset):
+    """Build the analysis view of a dataset. Callers pass only datasets the member may query."""
+    if not dataset.fields or dataset.qualified_table() is None:
         return None
     fields = dataset.fields
     derived = derive_fields(column_infos(fields), int(fields.get("rows", 0)), metrics)
@@ -106,7 +107,7 @@ async def visible_datasets(session: AsyncSession, actor: Actor) -> list[Dataset]
 
 
 async def queryable_datasets(session: AsyncSession, actor: Actor) -> list[Dataset]:
-    return [d for d in await visible_datasets(session, actor) if is_queryable(d)]
+    return [d for d in await visible_datasets(session, actor) if is_queryable(d, actor)]
 
 
 async def policy_for(session: AsyncSession, dataset_id: str, role: str) -> str | None:

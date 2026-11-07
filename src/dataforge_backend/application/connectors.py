@@ -323,6 +323,9 @@ async def import_table(
         landing_file=None,
         source_checksum=checksum,
     )
+    from .cleaning import prepare_working_copy  # cleaning imports the datasets module, so import it here
+
+    await prepare_working_copy(session, actor, dataset)
     connector.last_sync_at = utcnow()
     await session.commit()
     await session.refresh(dataset, ["insights"])

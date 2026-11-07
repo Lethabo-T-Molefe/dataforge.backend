@@ -55,11 +55,21 @@ class NextStep:
     reason: str
 
 
-def next_step(layer: Layer, status: DatasetStatus, role: Role) -> NextStep:
-    """The single next action for a dataset, worded the same way the frontend words it."""
+def next_step(layer: Layer, status: DatasetStatus, role: Role, *, owner_ready: bool = False) -> NextStep:
+    """The single next action for a dataset, worded the same way the frontend words it.
+
+    `owner_ready` means the member owns it and can already analyse it: cleaning and approval are optional for
+    their own analysis, and only needed to share it with others.
+    """
     if status == DatasetStatus.REJECTED:
         return NextStep(
             "rejected", "Rejected", "A steward rejected this dataset. The reason is on its record."
+        )
+    if owner_ready and status != DatasetStatus.APPROVED:
+        return NextStep(
+            "analyse",
+            "Analyse this data",
+            "You can analyse it now, with personal columns masked. Clean it and have it approved to share it.",
         )
     if layer == Layer.BRONZE:
         if has_permission(role, Permission.CLEAN):
@@ -80,9 +90,34 @@ def next_step(layer: Layer, status: DatasetStatus, role: Role) -> NextStep:
     return NextStep("analyse", "Analyse this data", "It is approved and ready to analyse.")
 
 
-def journey(layer: Layer, status: DatasetStatus, source: DatasetSource) -> list[dict[str, str]]:
+def journey(
+    layer: Layer, status: DatasetStatus, source: DatasetSource, *, owner_ready: bool = False
+) -> list[dict[str, str]]:
     cleaned = layer != Layer.BRONZE
     approved = status == DatasetStatus.APPROVED
+    if owner_ready and not approved:
+        return [
+            {
+                "label": "Brought in",
+                "detail": "Uploaded file" if source == DatasetSource.UPLOAD else "Connected source",
+                "state": "done",
+            },
+            {
+                "label": "Analysed by you",
+                "detail": "Personal columns masked",
+                "state": "current",
+            },
+            {
+                "label": "Cleaned",
+                "detail": f"{layer.value} layer" if cleaned else "Optional",
+                "state": "done" if cleaned else "todo",
+            },
+            {
+                "label": "Approved and shared",
+                "detail": "Optional, to share it",
+                "state": "todo",
+            },
+        ]
     return [
         {
             "label": "Brought in",
@@ -110,5 +145,8 @@ def journey(layer: Layer, status: DatasetStatus, source: DatasetSource) -> list[
 
 
 def is_queryable(layer: Layer, status: DatasetStatus) -> bool:
-    """Only approved data in the cleaned or analytics layers can be analysed."""
+    """Approved data in the cleaned or analytics layers can be analysed by everyone permitted to see it.
+
+    The owner's own access before approval is decided in application.common.is_owner_queryable.
+    """
     return status == DatasetStatus.APPROVED and layer in (Layer.SILVER, Layer.GOLD)

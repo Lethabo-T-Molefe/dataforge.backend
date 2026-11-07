@@ -38,7 +38,17 @@ from ..infrastructure.db.models import (
     User,
 )
 from . import audit, catalogue, inbox, integrations, quotas
-from .common import SYSTEM, Actor, can_see_dataset, humanize, is_queryable, shared_ids, slugify, snake
+from .common import (
+    SYSTEM,
+    Actor,
+    can_see_dataset,
+    humanize,
+    is_owner_queryable,
+    is_queryable,
+    shared_ids,
+    slugify,
+    snake,
+)
 from .runtime import sandbox
 
 log = get_logger(__name__)
@@ -48,7 +58,10 @@ log = get_logger(__name__)
 
 
 def summary(dataset: Dataset, actor: Actor) -> dict[str, Any]:
-    step = next_step(Layer(dataset.layer), DatasetStatus(dataset.status), Role(actor.role))
+    owner_ready = is_owner_queryable(dataset, actor)
+    step = next_step(
+        Layer(dataset.layer), DatasetStatus(dataset.status), Role(actor.role), owner_ready=owner_ready
+    )
     return {
         "id": dataset.id,
         "name": dataset.name,
@@ -66,7 +79,7 @@ def summary(dataset: Dataset, actor: Actor) -> dict[str, Any]:
         "rows": dataset.rows,
         "version": dataset.current_version,
         "table": dataset.qualified_table(),
-        "queryable": is_queryable(dataset),
+        "queryable": is_queryable(dataset, actor),
         "updated": humanize(dataset.updated_at),
         "updatedAt": dataset.updated_at.isoformat(),
         "quality": dataset.quality or {},
@@ -75,7 +88,10 @@ def summary(dataset: Dataset, actor: Actor) -> dict[str, Any]:
         "insights": [insight_dict(i) for i in dataset.insights if i.status == "open"],
         "nextStep": {"kind": step.kind, "label": step.label, "reason": step.reason},
         "journey": journey(
-            Layer(dataset.layer), DatasetStatus(dataset.status), DatasetSource(dataset.source)
+            Layer(dataset.layer),
+            DatasetStatus(dataset.status),
+            DatasetSource(dataset.source),
+            owner_ready=owner_ready,
         ),
         "decision": (
             {
@@ -391,6 +407,9 @@ async def upload(
         landing_file=(filename, content),
         dataset_id=dataset_id,
     )
+    from .cleaning import prepare_working_copy  # cleaning imports this module, so import it here
+
+    await prepare_working_copy(session, actor, dataset)
     await session.commit()
     await session.refresh(dataset, ["insights"])
     return dataset
@@ -412,7 +431,9 @@ async def approve(session: AsyncSession, actor: Actor, dataset_id: str, reason: 
     actor.require(Permission.APPROVE, "Only a Data Steward can approve datasets.")
     dataset = await get_visible(session, actor, dataset_id)
     if dataset.layer == Layer.BRONZE.value:
-        raise Conflict("Clean this dataset before approving it. Raw (bronze) data is never queryable.")
+        raise Conflict(
+            "Clean this dataset before approving it for others. Its owner can already analyse the masked copy."
+        )
     if dataset.status == DatasetStatus.APPROVED.value:
         raise Conflict("This dataset is already approved.")
     table = dataset.qualified_table()

@@ -143,5 +143,31 @@ def can_see_dataset(actor: Actor, dataset: Dataset, shared: set[str]) -> bool:
     return can_see(actor, dataset.owner_id, dataset.visibility, dataset.team, shared, dataset.id)
 
 
-def is_queryable(dataset: Dataset) -> bool:
+def is_shared_queryable(dataset: Dataset) -> bool:
+    """Cleaned and approved by a steward: anyone permitted to see it may analyse it."""
     return dataset.status == "approved" and dataset.layer in ("silver", "gold") and dataset.erased_at is None
+
+
+def is_owner_queryable(dataset: Dataset, actor: Actor | None) -> bool:
+    """The owner may analyse their own data before (or without) cleaning and approval.
+
+    They read the masked working copy, or their cleaned table while it waits for a decision; never raw bronze.
+    Rejected and erased data stays closed, and nobody else gains access until a steward approves it.
+    """
+    return (
+        actor is not None
+        and dataset.owner_id is not None
+        and dataset.owner_id == actor.id
+        and dataset.erased_at is None
+        and dataset.status != "rejected"
+        and bool(dataset.fields)
+        and dataset.qualified_table() is not None
+    )
+
+
+def is_queryable(dataset: Dataset, actor: Actor | None = None) -> bool:
+    """Approved data for everyone permitted to see it; the owner's own data for the owner alone.
+
+    Without an actor this is the shared rule only (used for Superset and organisation-wide syncs).
+    """
+    return is_shared_queryable(dataset) or is_owner_queryable(dataset, actor)

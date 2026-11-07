@@ -175,10 +175,16 @@ class Dataset(TimestampMixin, Base):
     insights: Mapped[list["Insight"]] = relationship(back_populates="dataset", cascade="all, delete-orphan")
 
     def qualified_table(self) -> str | None:
-        """The table analyses read: gold if promoted, silver once cleaned."""
+        """The table analyses read: gold if promoted, silver once cleaned.
+
+        Raw (bronze) data is never read directly. Before cleaning, the only readable table is the masked working
+        copy in silver, written on upload so the owner can analyse their own data without cleaning it first.
+        """
         if self.layer == "gold":
             return f"gold.{self.table_name}"
         if self.layer == "silver":
+            return f"silver.{self.table_name}"
+        if self.layer == "bronze" and (self.quality or {}).get("workingCopy"):
             return f"silver.{self.table_name}"
         return None
 
