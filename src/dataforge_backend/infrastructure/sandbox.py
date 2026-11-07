@@ -147,6 +147,8 @@ class Sandbox:
         Work on a whole dataset is `isolated`: it runs in a worker process that is killed at the cap, and
         `fn` and its arguments must be picklable. Short work on a sample stays in a worker thread.
         """
+        # A small host runs whole-dataset work in a thread too (settings.SANDBOX_PROCESS_ISOLATION).
+        isolated = isolated and settings.SANDBOX_PROCESS_ISOLATION
         caps: dict[str, Any] = {"timeoutS": timeout_s, "isolation": "worker-thread"}
         if isolated:
             caps = {"timeoutS": timeout_s, "isolation": "worker-process", "memoryMb": workers.memory_mb}

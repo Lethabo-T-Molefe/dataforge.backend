@@ -73,17 +73,25 @@ def _text(value: Any) -> str | None:
     return str(value)
 
 
+# Rows are copied to the database in batches, so only one batch of Python row tuples exists at a time: building
+# every row of a 50 000-row upload at once took hundreds of MB on a 512 MB instance.
+COPY_BATCH_ROWS = 5_000
+
+
 async def write_bronze(conn: AsyncConnection, table: str, frame: pd.DataFrame) -> int:
     """Raw data exactly as it arrived: every column as text, with the original row number."""
     columns = list(frame.columns)
     ddl = ", ".join([f"{ident(ROW_COLUMN)} bigint"] + [f"{ident(c)} text" for c in columns])
     await conn.execute(text(f"DROP TABLE IF EXISTS bronze.{ident(table)}"))
     await conn.execute(text(f"CREATE TABLE bronze.{ident(table)} ({ddl})"))
-    records = [
-        (i + 1, *(_text(v) for v in row)) for i, row in enumerate(frame.itertuples(index=False, name=None))
-    ]
-    await _copy(conn, "bronze", table, [ROW_COLUMN, *columns], records)
-    return len(records)
+    for start in range(0, len(frame), COPY_BATCH_ROWS):
+        batch = frame.iloc[start : start + COPY_BATCH_ROWS]
+        records = [
+            (start + i + 1, *(_text(v) for v in row))
+            for i, row in enumerate(batch.itertuples(index=False, name=None))
+        ]
+        await _copy(conn, "bronze", table, [ROW_COLUMN, *columns], records)
+    return len(frame)
 
 
 def _convert(value: Any, kind: str) -> Any:
@@ -111,12 +119,14 @@ async def write_typed(
     await conn.execute(text(f"DROP TABLE IF EXISTS {ident(schema)}.{ident(table)}"))
     await conn.execute(text(f"CREATE TABLE {ident(schema)}.{ident(table)} ({ddl})"))
     kinds = [types.get(c, "text") for c in columns]
-    records = [
-        tuple(_convert(v, k) for v, k in zip(row, kinds, strict=True))
-        for row in frame.itertuples(index=False, name=None)
-    ]
-    await _copy(conn, schema, table, columns, records)
-    return len(records)
+    for start in range(0, len(frame), COPY_BATCH_ROWS):
+        batch = frame.iloc[start : start + COPY_BATCH_ROWS]
+        records = [
+            tuple(_convert(v, k) for v, k in zip(row, kinds, strict=True))
+            for row in batch.itertuples(index=False, name=None)
+        ]
+        await _copy(conn, schema, table, columns, records)
+    return len(frame)
 
 
 async def read_frame(conn: AsyncConnection, table: str, limit: int | None = None) -> pd.DataFrame:
@@ -126,10 +136,20 @@ async def read_frame(conn: AsyncConnection, table: str, limit: int | None = None
         sql += f" ORDER BY {ident(ROW_COLUMN)}"
     if limit:
         sql += f" LIMIT {int(limit)}"
-    result = await conn.execute(text(sql))
+    # Stream the rows a batch at a time into one list per column: the values are stored once, instead of as
+    # database rows, then tuples, then the frame, all held together.
+    result = await conn.stream(text(sql))
     columns = list(result.keys())
-    rows = result.fetchall()
-    frame = pd.DataFrame([tuple(r) for r in rows], columns=columns, dtype=object)
+    values: list[list[Any]] = [[] for _ in columns]
+    async for partition in result.partitions(COPY_BATCH_ROWS):
+        for row in partition:
+            for index, value in enumerate(row):
+                values[index].append(value)
+    frame = pd.DataFrame(
+        {name: pd.Series(column, dtype=object) for name, column in zip(columns, values, strict=True)},
+        columns=columns,
+    )
+    del values
     if ROW_COLUMN in frame.columns:
         frame = frame.drop(columns=[ROW_COLUMN])
     return frame

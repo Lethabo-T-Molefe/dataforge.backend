@@ -84,6 +84,11 @@ class Settings(BaseSettings):
     # their time limit. WORKERS is how many run at once; MEMORY_MB caps each one (enforced on Linux only).
     SANDBOX_WORKERS: int = 2
     SANDBOX_WORKER_MEMORY_MB: int = 4096
+    # Each worker process loads pandas, scipy and scikit-learn again (about 250 MB) before it touches any data.
+    # On a small host (a 512 MB instance) set this false: the same work then runs in a thread inside the API
+    # process, still under its time limit, but without a separate process to kill or cap. Only the platform's
+    # own parsing, profiling and cleaning code runs here; member SQL runs under the read-only database role.
+    SANDBOX_PROCESS_ISOLATION: bool = True
 
     # AI assistant. Without an API key the assistant uses its rule-based parser.
     ANTHROPIC_API_KEY: str | None = None
