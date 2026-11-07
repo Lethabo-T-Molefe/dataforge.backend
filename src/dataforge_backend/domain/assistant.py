@@ -228,17 +228,36 @@ class Catalogue:
         return ", ".join(names[:-1]) + (f" or {names[-1]}" if len(names) > 1 else names[0])
 
     def example_questions(self) -> list[str]:
-        out: list[str] = []
-        for entry in self.entries:
-            if not entry.governed:
-                continue
-            m = entry.dataset.measures[entry.measure]
-            dims = list(entry.dataset.dimensions)
-            if dims:
-                out.append(f"What is {m.label.lower()} by {entry.dataset.dimensions[dims[0]].label.lower()}?")
-            if entry.dataset.has_time:
-                out.append(f"How has {m.label.lower()} changed over time?")
+        """Questions this catalogue can answer: shared metrics first, then a dataset's own columns.
+
+        A member's own upload has no shared metric yet, so its columns (and its row count) supply the
+        suggestions instead; otherwise asking about one chosen dataset would offer nothing to try.
+        """
+        out = self._questions([e for e in self.entries if e.governed])
+        if len(out) < 2:
+            out += self._questions([e for e in self.entries if not e.governed])
         return list(dict.fromkeys(out))
+
+    @staticmethod
+    def _questions(entries: list[MeasureEntry]) -> list[str]:
+        out: list[str] = []
+        for entry in entries:
+            m = entry.dataset.measures[entry.measure]
+            label = m.label.lower()
+            for dim in list(entry.dataset.dimensions)[:2]:
+                by = entry.dataset.dimensions[dim].label.lower()
+                out.append(
+                    f"How many rows are there by {by}?"
+                    if m.id == "row_count"
+                    else f"What is {label} by {by}?"
+                )
+            if entry.dataset.has_time:
+                out.append(
+                    "How has the number of rows changed over time?"
+                    if m.id == "row_count"
+                    else f"How has {label} changed over time?"
+                )
+        return out
 
 
 def detect_injection(text: str) -> bool:

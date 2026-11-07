@@ -151,6 +151,58 @@ def refresh_connectors() -> None:
             )
 
 
+@app.command("prepare-working-copies")
+def prepare_working_copies(dry_run: bool = False) -> None:
+    """Give raw datasets uploaded before owner analysis existed their masked working copy, once.
+
+    Only raw, pending datasets with an owner and no working copy are touched; each is committed on its own,
+    so one failure does not undo the rest. With --dry-run, list them without writing anything.
+    """
+
+    async def go() -> list[tuple[str, str]]:
+        from sqlalchemy import select
+
+        from .application import cleaning
+        from .application.common import Actor
+        from .core.database import SessionLocal, engine
+        from .infrastructure.db.models import Dataset, User
+        from .infrastructure.workers import pool
+
+        outcomes: list[tuple[str, str]] = []
+        try:
+            async with SessionLocal() as session:
+                rows = await session.execute(
+                    select(Dataset).where(
+                        Dataset.layer == "bronze",
+                        Dataset.status == "pending",
+                        Dataset.erased_at.is_(None),
+                        Dataset.owner_id.is_not(None),
+                    )
+                )
+                for dataset in rows.scalars().all():
+                    if (dataset.quality or {}).get("workingCopy"):
+                        continue
+                    if dry_run:
+                        outcomes.append((dataset.id, "would prepare"))
+                        continue
+                    owner = await session.get(User, dataset.owner_id)
+                    if owner is None:
+                        outcomes.append((dataset.id, "skipped: owner not found"))
+                        continue
+                    done = await cleaning.prepare_working_copy(session, Actor.from_user(owner), dataset)
+                    await session.commit()
+                    outcomes.append((dataset.id, "prepared" if done else "failed (see the log)"))
+        finally:
+            pool.shutdown()
+            await engine.dispose()
+        return outcomes
+
+    outcomes = _run(go())
+    for dataset_id, outcome in outcomes:
+        typer.echo(f"{dataset_id}: {outcome}")
+    typer.echo(f"{len(outcomes)} dataset(s) considered.")
+
+
 @app.command("superset-sync")
 def superset_sync() -> None:
     """Create the read-only BI login, register the warehouse in Superset, and sync datasets and policies."""

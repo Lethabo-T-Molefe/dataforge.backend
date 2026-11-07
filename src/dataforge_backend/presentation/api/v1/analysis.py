@@ -1,6 +1,6 @@
 from typing import Any
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ....application import analysis, assistant, workbench
@@ -76,8 +76,11 @@ async def ask(
     """Ask in plain English. The answer comes with the SQL that ran and an explanation, or a clear refusal.
 
     `contextId` is the id of the member's previous answer, so a follow-up ("what about Gauteng?") builds on it.
+    `datasetId` limits the answer to the dataset the member chose.
     """
-    return await assistant.ask(session, actor, body.question, context_id=body.context_id)
+    return await assistant.ask(
+        session, actor, body.question, context_id=body.context_id, dataset_id=body.dataset_id
+    )
 
 
 @router.get("/assistant/history")
@@ -89,9 +92,11 @@ async def assistant_history(
 
 @router.get("/assistant/suggestions")
 async def assistant_suggestions(
-    actor: Actor = Depends(current_actor), session: AsyncSession = Depends(get_db)
+    dataset_id: str | None = Query(default=None, alias="datasetId", max_length=128),
+    actor: Actor = Depends(current_actor),
+    session: AsyncSession = Depends(get_db),
 ) -> list[str]:
-    return await assistant.suggestions(session, actor)
+    return await assistant.suggestions(session, actor, dataset_id)
 
 
 # ------------------------------------------------------------------ SQL workbench

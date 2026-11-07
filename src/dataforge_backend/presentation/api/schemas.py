@@ -230,6 +230,8 @@ class CellIn(Body):
 class AskIn(Body):
     question: str = Field(min_length=1, max_length=2000)
     context_id: str | None = Field(default=None, max_length=32)
+    # The dataset the member chose. When set, the assistant answers from that dataset only.
+    dataset_id: str | None = Field(default=None, max_length=128)
 
 
 # ------------------------------------------------------------------ dashboards, monitors, predictions, connectors

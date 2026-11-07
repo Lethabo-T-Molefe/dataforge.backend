@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.config import settings
-from ..core.errors import ValidationFailed
+from ..core.errors import Conflict, ValidationFailed
 from ..core.logging import get_logger
 from ..domain.analysis import AnalysisDataset, AnalysisError, config_from_dict
 from ..domain.analysis.format import format_delta, format_percent, format_value
@@ -38,8 +38,15 @@ from .common import Actor, humanize
 log = get_logger(__name__)
 
 
-async def _catalogue(session: AsyncSession, actor: Actor) -> Catalogue:
+async def _catalogue(session: AsyncSession, actor: Actor, dataset_id: str | None = None) -> Catalogue:
+    """What the member may ask about. With `dataset_id`, only that dataset: the one they chose."""
     datasets = await catalogue.analysis_catalogue(session, actor)
+    if dataset_id:
+        datasets = [d for d in datasets if d.id == dataset_id]
+        if not datasets:
+            raise Conflict(
+                "That dataset is not ready to analyse yet. Open it to see its next step, or choose another."
+            )
     synonyms: dict[str, list[str]] = {}
     for metric in (
         await session.execute(select(MetricDefinition).where(MetricDefinition.status == "published"))
@@ -49,16 +56,22 @@ async def _catalogue(session: AsyncSession, actor: Actor) -> Catalogue:
 
 
 async def _previous(
-    session: AsyncSession, actor: Actor, context_id: str | None
+    session: AsyncSession, actor: Actor, context_id: str | None, cat: Catalogue
 ) -> tuple[AssistantPlan, str] | None:
-    """The member's own earlier answer that a new question may follow up, with its question."""
+    """The member's own earlier answer that a new question may follow up, with its question.
+
+    An earlier answer about a dataset outside the current catalogue (another dataset was chosen) is ignored,
+    so a follow-up never drifts back to it.
+    """
     if not context_id:
         return None
     earlier = await session.get(AssistantQuery, context_id)
     if earlier is None or earlier.user_id != actor.id or earlier.refused or not earlier.plan:
         return None
     plan = AssistantPlan.from_dict(earlier.plan)
-    return (plan, earlier.question) if plan else None
+    if plan is None or plan.dataset_id not in cat.datasets:
+        return None
+    return plan, earlier.question
 
 
 async def _plan(
@@ -189,8 +202,12 @@ async def ask(
     question: str,
     channel: str = "web",
     context_id: str | None = None,
+    dataset_id: str | None = None,
 ) -> dict[str, Any]:
-    """Answer a question. `context_id` is the member's previous answer, which a follow-up builds on."""
+    """Answer a question. `context_id` is the member's previous answer, which a follow-up builds on.
+
+    `dataset_id` is the dataset the member chose: the rules and the model may only plan against it.
+    """
     actor.require(Permission.ANALYSE)
     actor.require_verified()
     question = " ".join(question.split())
@@ -199,13 +216,13 @@ async def ask(
     question = question[:2000]
     await quotas.check_ai(session, actor)
     started = time.perf_counter()
-    cat = await _catalogue(session, actor)
+    cat = await _catalogue(session, actor, dataset_id)
     if detect_injection(question):
         await audit.record(
             session, actor, "Suspected prompt injection", "assistant", None, "AI assistant", question[:500]
         )
 
-    planned, planner, model = await _plan(question, cat, await _previous(session, actor, context_id))
+    planned, planner, model = await _plan(question, cat, await _previous(session, actor, context_id, cat))
     record = AssistantQuery(user_id=actor.member_id, question=question, planner=planner, channel=channel)
 
     if isinstance(planned, AssistantPlan):
@@ -285,6 +302,9 @@ async def history(session: AsyncSession, actor: Actor, limit: int = 20) -> list[
     return [turn_dict(q) for q in rows.scalars()]
 
 
-async def suggestions(session: AsyncSession, actor: Actor) -> list[str]:
-    cat = await _catalogue(session, actor)
+async def suggestions(session: AsyncSession, actor: Actor, dataset_id: str | None = None) -> list[str]:
+    try:
+        cat = await _catalogue(session, actor, dataset_id)
+    except Conflict:
+        return []
     return cat.example_questions()[:6]
