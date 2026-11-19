@@ -31,8 +31,9 @@ from ..domain.assistant import (
 from ..domain.qualitative import Route, early_route, is_general
 from ..domain.roles import Permission
 from ..domain.sql_guard import QueryRefused
+from ..domain.trace import Trace
 from ..infrastructure import llm
-from ..infrastructure.db.models import AssistantQuery, Dataset, MetricDefinition
+from ..infrastructure.db.models import AssistantQuery, Dataset, MetricDefinition, User
 from . import analysis, audit, catalogue, qualitative, quotas
 from .common import Actor, humanize
 
@@ -75,16 +76,30 @@ async def _previous(
     return plan, earlier.question
 
 
+PLANNERS = ("rules", "llm")
+
+
 async def _plan(
-    question: str, cat: Catalogue, previous: tuple[AssistantPlan, str] | None = None
-) -> tuple[AssistantPlan | Refusal, str, str | None]:
-    """(plan, planner, model). Safety checks run first and cannot be overridden by the model."""
+    question: str,
+    cat: Catalogue,
+    previous: tuple[AssistantPlan, str] | None = None,
+    planner: str | None = None,
+) -> tuple[AssistantPlan | Refusal, str, str | None, str | None]:
+    """(plan, planner, model, note). Safety checks run first and cannot be overridden by the model.
+
+    `planner` forces one planner (the evaluation harness compares them): "rules" never calls the model, and
+    "llm" requires one to be configured. The note says why the rules planned when the model was expected to.
+    """
     earlier = previous[0] if previous else None
     first = plan_question(question, cat, earlier)
     if isinstance(first, Refusal) and first.reason in ("injection", "personal"):
-        return first, "rules", None
+        return first, "rules", None, "Safety checks run before any model and cannot be overridden."
+    if planner == "rules":
+        return first, "rules", None, "The rule-based planner was chosen for this question."
     if not settings.llm_enabled or not cat.datasets:
-        return first, "rules", None
+        if planner == "llm":
+            raise ValidationFailed("No language model is configured, so the model planner cannot be used.")
+        return first, "rules", None, "No language model is configured, so the rule-based planner planned."
     try:
         proposal, model = await llm.propose_plan(
             question,
@@ -94,8 +109,48 @@ async def _plan(
         )
     except llm.PlanUnavailable as error:
         log.info("assistant_fallback_to_rules", reason=str(error))
-        return first, "rules", None
-    return plan_from_model(proposal, cat, earlier), "model", model
+        return (
+            first,
+            "rules",
+            None,
+            f"The model was unavailable ({error}), so the rule-based planner planned.",
+        )
+    return plan_from_model(proposal, cat, earlier), "model", model, None
+
+
+async def _metric_record(session: AsyncSession, metric_id: str | None) -> dict[str, Any] | None:
+    """The governed metric behind a measure: its version, and who published it when."""
+    if not metric_id:
+        return None
+    metric = await session.get(MetricDefinition, metric_id)
+    if metric is None:
+        return None
+    publisher = await session.get(User, metric.published_by) if metric.published_by else None
+    return {
+        "id": metric.id,
+        "name": metric.name,
+        "version": metric.version,
+        "publishedBy": publisher.name if publisher else metric.owner_label,
+        "publishedAt": metric.published_at.date().isoformat() if metric.published_at else None,
+    }
+
+
+def _chart(result: dict[str, Any]) -> dict[str, Any] | None:
+    """The answer's chart, kept small: at most 60 points."""
+    visual = result.get("visual")
+    if not isinstance(visual, dict):
+        return None
+    trimmed = dict(visual)
+    for key in ("points", "bins"):
+        if isinstance(trimmed.get(key), list):
+            trimmed[key] = trimmed[key][:60]
+    return {"visual": trimmed, "format": result.get("format"), "axisFormat": result.get("axisFormat")}
+
+
+_REFUSAL_STEP = {
+    "injection": ("screen", "Checked the question for attempts to change the assistant's instructions"),
+    "personal": ("screen", "Checked the question for requests about named people"),
+}
 
 
 def _config_body(plan: AssistantPlan, dataset: AnalysisDataset) -> dict[str, Any]:
@@ -200,6 +255,9 @@ def turn_dict(q: AssistantQuery) -> dict[str, Any]:
         out["table"] = q.result_table
     if q.build:
         out["build"] = q.build
+    out["trace"] = q.trace or []
+    if q.chart:
+        out["chart"] = q.chart
     return out
 
 
@@ -210,21 +268,28 @@ async def ask(
     channel: str = "web",
     context_id: str | None = None,
     dataset_id: str | None = None,
+    planner: str | None = None,
 ) -> dict[str, Any]:
     """Answer a question. `context_id` is the member's previous answer, which a follow-up builds on.
 
     `dataset_id` is the dataset the member chose: the rules and the model may only plan against it.
+    `planner` forces "rules" or "llm" (used by the evaluation harness); normally the model plans when one is
+    configured. The answer carries a trace of every governance step it went through.
     """
     actor.require(Permission.ANALYSE)
     actor.require_verified()
     question = " ".join(question.split())
     if not question:
         raise ValidationFailed("Type a question.")
+    if planner is not None and planner not in PLANNERS:
+        raise ValidationFailed(f"Planner is one of {', '.join(PLANNERS)}.")
     question = question[:2000]
     await quotas.check_ai(session, actor)
     started = time.perf_counter()
+    trace = Trace()
     cat = await _catalogue(session, actor, dataset_id)
-    if detect_injection(question):
+    suspected = detect_injection(question)
+    if suspected:
         await audit.record(
             session, actor, "Suspected prompt injection", "assistant", None, "AI assistant", question[:500]
         )
@@ -235,7 +300,29 @@ async def ask(
     target = qualitative.in_scope(cat)
     first = plan_question(question, cat, previous[0] if previous else None)
     safe = not (isinstance(first, Refusal) and first.reason in ("injection", "personal"))
-    if target is not None and safe:
+    if safe:
+        trace.step(
+            "screen",
+            "Checked the question",
+            "No attempt to change the assistant's instructions, and no request about a named person.",
+        )
+    else:
+        assert isinstance(first, Refusal)
+        key, label = _REFUSAL_STEP[first.reason]
+        trace.step(key, label, first.explanation, status="blocked", reason=first.reason)
+    names = ", ".join(d.name for d in cat.datasets.values())
+    trace.step(
+        "catalogue",
+        "Limited to data you may use",
+        (
+            f"Only the dataset you chose: {names}."
+            if dataset_id
+            else f"{len(cat.datasets)} dataset(s) your role ({actor.role_label}) may analyse."
+        ),
+        datasets=[d.id for d in cat.datasets.values()],
+        role=actor.role_label,
+    )
+    if target is not None and safe and planner is None:
         row = await session.get(Dataset, target.id)
         early = early_route(question, row.profile) if row is not None and row.profile else None
         if early is None and isinstance(first, Refusal) and is_general(question):
@@ -247,25 +334,48 @@ async def ask(
             )
             if used is not None:
                 record.planner = "model" if used else "rules"
-                return await _finish(session, actor, record, question, started, record.planner, used, channel)
+                _qualitative_steps(trace, early, used)
+                return await _finish(
+                    session, actor, record, question, started, record.planner, used, channel, trace
+                )
 
-    planned, planner, model = await _plan(question, cat, previous)
-    record = AssistantQuery(user_id=actor.member_id, question=question, planner=planner, channel=channel)
+    planned, planner_used, model, note = await _plan(question, cat, previous, planner)
+    record = AssistantQuery(user_id=actor.member_id, question=question, planner=planner_used, channel=channel)
+    if safe:
+        trace.step(
+            "planner",
+            "Planned the analysis",
+            note
+            or f"{model} proposed a structured plan, choosing only from your permitted datasets, measures and "
+            "values. It wrote no SQL and saw no rows.",
+            planner=planner_used,
+            model=model,
+        )
 
     if isinstance(planned, AssistantPlan):
         dataset = cat.datasets[planned.dataset_id]
+        trace.step("plan", "The plan", "", plan=planned.to_dict())
         try:
             config = config_from_dict(dataset, _config_body(planned, dataset))
             result = await analysis.execute(session, actor, dataset, config, kind="assistant")
         except (AnalysisError, QueryRefused) as error:
             log.info("assistant_plan_not_runnable", error=str(error))
             planned = refusal("ungrounded", cat)
+            trace.step(
+                "validation",
+                "Checked the plan against your data",
+                f"The plan could not be run on permitted data: {error}",
+                status="blocked",
+            )
         else:
             if result.get("empty"):
                 planned = Refusal(
                     "ungrounded",
                     result["reading"],
                     "No rows matched, so there is nothing to report. Try a wider period.",
+                )
+                trace.step(
+                    "validation", "Checked the plan against your data", "No rows matched.", status="blocked"
                 )
             else:
                 measures = [dataset.measures[planned.measure]]
@@ -284,6 +394,7 @@ async def ask(
                     *(["Role row filters"] if result.get("rowPolicy") else []),
                 ]
                 record.result_table = result["table"]
+                record.chart = _chart(result)
                 record.build = {
                     "method": planned.method,
                     "dataset": dataset.id,
@@ -291,8 +402,14 @@ async def ask(
                     **({"dimension": planned.dimension} if planned.dimension else {}),
                     **({"measureY": config.measure_y} if planned.method == "relationship" else {}),
                 }
+                await _answered_steps(session, trace, dataset, measures, planned, result)
 
-    if isinstance(planned, Refusal) and planned.reason == "ungrounded" and target is not None:
+    if (
+        isinstance(planned, Refusal)
+        and planned.reason == "ungrounded"
+        and target is not None
+        and planner is None
+    ):
         # Not a calculation: let the model say what kind of question it is (a cross-tab, text themes, a
         # question about the dataset itself) and answer that, rather than refusing.
         row = await session.get(Dataset, target.id)
@@ -314,8 +431,17 @@ async def ask(
             )
             if used is not None:
                 record.planner = "model" if (used or route_model) else "rules"
+                _qualitative_steps(trace, routed, used or route_model)
                 return await _finish(
-                    session, actor, record, question, started, record.planner, used or route_model, channel
+                    session,
+                    actor,
+                    record,
+                    question,
+                    started,
+                    record.planner,
+                    used or route_model,
+                    channel,
+                    trace,
                 )
 
     if isinstance(planned, Refusal):
@@ -325,8 +451,98 @@ async def ask(
         record.explanation = planned.explanation
         record.sql = ""
         record.grounded_in = []
+        if not trace.blocked:
+            trace.step(
+                "validation",
+                "Checked the plan against your data",
+                planned.explanation
+                or "No permitted data answers this, so the assistant refused rather than guessed.",
+                status="blocked",
+                reason=planned.reason,
+            )
 
-    return await _finish(session, actor, record, question, started, planner, model, channel)
+    return await _finish(session, actor, record, question, started, planner_used, model, channel, trace)
+
+
+def _qualitative_steps(trace: Trace, route: Route, model: str | None) -> None:
+    detail = {
+        "crosstab": "A cross-tabulation of two category columns, counted by DataForge with a chi-square test.",
+        "themes": (
+            "Themes in a written-text column: a sample of answers was labelled, and DataForge counted the "
+            "labels. Personal details were removed before any text left the platform."
+        ),
+        "profile": "Answered from the dataset's quality profile.",
+        "overview": "Answered from what the dataset holds: its columns, measures and quality.",
+    }.get(route.kind, "Answered from the dataset's profile.")
+    trace.step(
+        "planner",
+        "Routed to a descriptive answer",
+        detail,
+        route=route.kind,
+        planner="model" if model else "rules",
+        model=model,
+    )
+
+
+async def _answered_steps(
+    session: AsyncSession,
+    trace: Trace,
+    dataset: AnalysisDataset,
+    measures: list[Any],
+    planned: AssistantPlan,
+    result: dict[str, Any],
+) -> None:
+    checks = [f"{dataset.name} is approved and you may analyse it."]
+    metrics = []
+    for measure in measures:
+        record = await _metric_record(session, measure.metric_id) if measure.governed else None
+        if record:
+            metrics.append(record)
+            checks.append(
+                f"{measure.label} is the shared metric '{record['name']}' (version {record['version']}, "
+                f"published by {record['publishedBy']}"
+                + (f" on {record['publishedAt']}" if record["publishedAt"] else "")
+                + "), so it is computed the same way everywhere."
+            )
+        else:
+            checks.append(f"{measure.label} is a column of the dataset, not a shared metric.")
+    if planned.filters:
+        checks.append(
+            "Every filter value exists in the data: "
+            + ", ".join(f"{k} = {v}" for k, v in planned.filters.items())
+            + "."
+        )
+    trace.step("validation", "Checked the plan against your data", " ".join(checks), metrics=metrics or None)
+    row = await session.get(Dataset, dataset.id)
+    masked = sorted((row.pii_columns or {}) if row else {})
+    privacy = (
+        f"Personal columns stay masked and cannot be queried: {', '.join(masked)}."
+        if masked
+        else "The dataset has no personal columns."
+    )
+    if result.get("rowPolicy"):
+        privacy += " Your role's row filter was applied before anything was computed."
+    trace.step(
+        "privacy", "Kept personal data out", privacy, masked=masked, rowPolicy=bool(result.get("rowPolicy"))
+    )
+    trace.step(
+        "sql",
+        "Wrote the SQL",
+        "DataForge's analysis engine composed this SQL from the validated plan, and it passed the same checks as "
+        "any member's query.",
+        sql=result.get("sql"),
+        runnable=result.get("sqlRunnable"),
+    )
+    sandbox = result.get("sandbox") or {}
+    caps = sandbox.get("caps") or {}
+    trace.step(
+        "sandbox",
+        "Ran it in the sandbox",
+        f"Read-only, as the {caps.get('role', 'sandbox')} role, with a {int(caps.get('timeoutMs', 0)) // 1000}-second "
+        f"limit; {sandbox.get('rows', 0)} row(s) in {sandbox.get('durationMs', 0)} ms.",
+        sessionId=sandbox.get("sessionId"),
+        caps=caps or None,
+    )
 
 
 async def _finish(
@@ -338,6 +554,7 @@ async def _finish(
     planner: str,
     model: str | None,
     channel: str,
+    trace: Trace | None = None,
 ) -> dict[str, Any]:
     """Record the answered (or refused) question, count it against the quota, audit it and return it."""
     record.latency_ms = int((time.perf_counter() - started) * 1000)
@@ -345,7 +562,7 @@ async def _finish(
     await quotas.add_ai_query(session, actor.id)
     action = "Refused AI query" if record.refused else "Ran AI query"
     detail = question if not record.refused else f"{question} ({record.refusal_reason})"
-    await audit.record(
+    event = await audit.record(
         session,
         actor,
         action,
@@ -355,6 +572,17 @@ async def _finish(
         detail[:500],
         {"planner": planner, "model": model, "channel": channel},
     )
+    await session.flush()
+    if trace is not None:
+        trace.step(
+            "audit",
+            "Recorded it",
+            f"Written to the append-only audit trail as event {event.id}, with the planner"
+            + (f" ({model})" if model else "")
+            + " and the channel.",
+            eventId=str(event.id),
+        )
+        record.trace = trace.to_list()
     await session.commit()
     return turn_dict(record)
 

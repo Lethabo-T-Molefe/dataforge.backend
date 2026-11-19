@@ -5,6 +5,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.config import settings
 from ..core.errors import NotFound, Refused, ValidationFailed
 from ..domain.analysis import (
     ANALYSIS_METHODS,
@@ -89,6 +90,19 @@ async def execute(
         ]
     output["dataset"] = {"id": dataset.id, "name": dataset.name, "table": dataset.table}
     output["measureUnit"] = dataset.measures[config.measure].unit
+    # Where and how it ran, so an answer can point at the recorded sandbox session.
+    output["sandbox"] = {
+        "sessionId": result.session_id,
+        "durationMs": result.duration_ms,
+        "rows": len(result.rows),
+        "truncated": result.truncated,
+        "caps": {
+            "readOnly": True,
+            "role": settings.SANDBOX_ROLE,
+            "maxRows": 20_000,
+            "timeoutMs": settings.SANDBOX_STATEMENT_TIMEOUT_MS,
+        },
+    }
     return output
 
 
