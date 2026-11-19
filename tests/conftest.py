@@ -32,6 +32,8 @@ os.environ["SLACK_WEBHOOK_URL"] = ""
 os.environ["SMTP_HOST"] = ""
 os.environ["RESEND_API_KEY"] = ""
 os.environ["MONITOR_INTERVAL_SECONDS"] = "0"
+# The skills-development showcase is smaller in tests, so seeding stays quick.
+os.environ["SEED_LEARNERS"] = "2000"
 os.environ["STORAGE_DIR"] = str(Path(__file__).resolve().parents[1] / "var" / "test-landing")
 # Tests never reach hosted services configured for development: files land on local disk, errors stay local.
 os.environ["CLOUDINARY_URL"] = ""

@@ -115,7 +115,11 @@ async def test_a_refresh_keeps_approval_only_when_nothing_changed_shape(
     review = await _ok(await client.post(f"/api/v1/connectors/{connector['id']}/sync", headers=steward))
     assert [o["status"] for o in review] == ["review"], review
     pending = await _ok(await client.get(f"/api/v1/datasets/{dataset_id}", headers=steward))
-    assert pending["queryable"] is False and pending["status"] == "pending"
+    assert pending["status"] == "pending"
+    # The steward who imported it still owns it and may analyse it; for everyone else it is closed again.
+    viewer = await sign_in("practitioner")
+    closed = await _ok(await client.get(f"/api/v1/datasets/{dataset_id}", headers=viewer))
+    assert closed["queryable"] is False and closed["status"] == "pending"
 
     inbox = await _ok(await client.get("/api/v1/notifications", headers=steward))
     titles = [n["title"] for n in inbox["items"]]

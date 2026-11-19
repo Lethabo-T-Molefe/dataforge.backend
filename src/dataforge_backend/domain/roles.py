@@ -43,6 +43,8 @@ class Permission(StrEnum):
     MANAGE_MONITORS = "manage_monitors"
     PREDICT = "predict"
     CURATE_MODELS = "curate_models"
+    # Approving a model version is a second person's decision: never the one who built or trained it.
+    APPROVE_MODELS = "approve_models"
     VIEW_ALL_AUDIT = "view_all_audit"
     VIEW_ALL_DATASETS = "view_all_datasets"
     MANAGE_POLICIES = "manage_policies"
@@ -70,6 +72,7 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.DEFINE_METRICS,
             Permission.PUBLISH_METRICS,
             Permission.APPROVE,
+            Permission.APPROVE_MODELS,
             Permission.MANAGE_CONNECTORS,
             Permission.VIEW_ALL_AUDIT,
             Permission.VIEW_ALL_DATASETS,

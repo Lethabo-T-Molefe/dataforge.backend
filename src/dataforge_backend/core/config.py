@@ -101,6 +101,19 @@ class Settings(BaseSettings):
 
     # Monitoring. 0 disables the in-process scheduler (use `dataforge evaluate-monitors` from cron instead).
     MONITOR_INTERVAL_SECONDS: int = 900
+    # The scheduled anomaly scan over governed metrics: hours between scans (0 turns it off), and how many
+    # robust standard deviations from the expected value count as unusual.
+    ANOMALY_SCAN_HOURS: int = 24
+    ANOMALY_Z: float = 3.5
+
+    # Trained outcome models. Cross-validation folds, the training time limit, and the most rows a model
+    # trains on (larger datasets are sampled, stratified by outcome, and the card says so).
+    MODEL_CV_FOLDS: int = 5
+    MODEL_TRAIN_TIMEOUT_S: int = 600
+    MODEL_MAX_ROWS: int = 50_000
+
+    # Demo data: how many learners the skills-development showcase simulates.
+    SEED_LEARNERS: int = 5_000
 
     # Rate limiting. With REDIS_URL set, limits are shared across API replicas.
     REDIS_URL: str | None = None

@@ -29,6 +29,7 @@ from .infrastructure.db.models import (
     Monitor,
     User,
 )
+from .seed_data import learners as showcase
 
 log = get_logger(__name__)
 
@@ -282,6 +283,21 @@ def enrolments_frame(rows: int = 4800) -> pd.DataFrame:
     return pd.concat([frame, duplicates], ignore_index=True).astype(object)
 
 
+def _as_export(rows: list[dict[str, Any]]) -> pd.DataFrame:
+    """As a source system exports it: every value text, blanks empty. Cleaning types the columns."""
+    return pd.DataFrame(rows).fillna("").astype(str).astype(object)
+
+
+def learner_frame(count: int | None = None) -> pd.DataFrame:
+    """The skills-development showcase: one row per learner (synthetic; see seed_data.learners)."""
+    return _as_export(showcase.learners(count or settings.SEED_LEARNERS))
+
+
+def monthly_frame() -> pd.DataFrame:
+    """The provider network's progress by month, programme, province and SETA (synthetic)."""
+    return _as_export(showcase.monthly())
+
+
 def tickets_frame(rows: int = 1240) -> pd.DataFrame:
     rng = random.Random(8821)
     categories = [
@@ -427,6 +443,112 @@ async def _metrics(session: AsyncSession, owner: User) -> None:
             "Learning sessions logged, divided by enrolments.",
             ["sessions", "engagement"],
             "course / month",
+        ),
+        # Skills-development showcase. Column names differ from the course metrics above on purpose, so each
+        # metric applies to the datasets it was written for.
+        (
+            "programme-starts",
+            "programme_starts",
+            "Programme starts",
+            "count",
+            "additive",
+            "starts",
+            None,
+            None,
+            "Learners who started a learnership, skills programme or apprenticeship.",
+            ["starts", "learners started", "intake"],
+            "learner",
+        ),
+        (
+            "programme-completions",
+            "programme_completions",
+            "Programme completions",
+            "count",
+            "additive",
+            "completed",
+            None,
+            None,
+            "Learners who completed their programme.",
+            ["learnership completions", "programme completions", "qualified learners"],
+            "learner",
+        ),
+        (
+            "learner-dropouts",
+            "learner_dropouts",
+            "Learner drop-outs",
+            "count",
+            "additive",
+            "dropped",
+            None,
+            None,
+            "Learners who left their programme before completing it.",
+            ["drop-outs", "dropouts", "learners who dropped out"],
+            "learner",
+        ),
+        (
+            "dropout-rate",
+            "dropout_rate",
+            "Drop-out rate",
+            "rate",
+            "ratio",
+            None,
+            "dropped",
+            "starts",
+            "Share of learners who started and later dropped out. Learners still in progress count as not dropped.",
+            ["dropout rate", "drop-out rate", "attrition", "attrition rate"],
+            "learner",
+        ),
+        (
+            "programme-completion-rate",
+            "programme_completion_rate",
+            "Programme completion rate",
+            "rate",
+            "ratio",
+            None,
+            "completed",
+            "starts",
+            "Share of learners who started and completed. Learners still in progress count as not completed.",
+            ["throughput", "throughput rate", "programme completion rate", "certification rate"],
+            "learner",
+        ),
+        (
+            "monthly-dropouts",
+            "monthly_dropouts",
+            "Monthly drop-outs",
+            "count",
+            "additive",
+            "dropouts",
+            None,
+            None,
+            "Learners who left their programme in the month, across the provider network.",
+            ["monthly drop-outs", "drop-outs per month"],
+            "month / programme / province / SETA",
+        ),
+        (
+            "monthly-dropout-rate",
+            "monthly_dropout_rate",
+            "Monthly drop-out rate",
+            "rate",
+            "ratio",
+            None,
+            "dropouts",
+            "enrolled_learners",
+            "Drop-outs in the month divided by learners enrolled at the start of the month.",
+            ["monthly drop-out rate", "monthly attrition"],
+            "month / programme / province / SETA",
+        ),
+        (
+            "new-starts",
+            "new_starts",
+            "New starts",
+            "count",
+            "additive",
+            "new_starts",
+            None,
+            None,
+            "Learners who started a programme in the month.",
+            ["new learners", "monthly intake"],
+            "month / programme / province / SETA",
         ),
     ]
     for (
@@ -603,8 +725,9 @@ async def seed_demo(session: AsyncSession) -> dict[str, Any]:
         dataset.owner_label = "Data Stewardship"
         dataset.default_measure = "revenue"
         await session.commit()
+        # Naledi stewards this dataset, so a second person (the administrator) approves it.
         await _clean_and_approve(
-            session, actors["naledi"], actors["naledi"], "regional-revenue", [("type-coerce-sentinels", None)]
+            session, actors["naledi"], actors["amina"], "regional-revenue", [("type-coerce-sentinels", None)]
         )
         await datasets.promote(session, actors["naledi"], "regional-revenue", None)
         created.append("regional-revenue")
@@ -645,6 +768,70 @@ async def seed_demo(session: AsyncSession) -> dict[str, Any]:
         )
         await session.commit()
         created.append("support-tickets")
+
+    # Skills-development showcase: learner records and the network's monthly progress. Sipho brings them in
+    # from the training management system; Naledi, a different person, approves them.
+    if await session.get(Dataset, "learner-progress") is None:
+        await datasets.ingest_frame(
+            session,
+            actors["sipho"],
+            learner_frame(),
+            name="Learner progress",
+            preferred_id="learner-progress",
+            table_name="learner_progress",
+            description=(
+                "One row per learner: programme, host employer, signals from the first six weeks, and the outcome "
+                "so far. Synthetic showcase data."
+            ),
+            source="connector",
+            source_name="Training management system · learners",
+            classification="restricted-personal",
+            visibility="organisation",
+            connector_id="wh-analytics",
+        )
+        await session.commit()
+        await _clean_and_approve(
+            session,
+            actors["sipho"],
+            actors["naledi"],
+            "learner-progress",
+            [
+                ("type-coerce-sentinels", None),
+                # ID numbers are not needed for analysis; bronze keeps them for a steward.
+                ("struct-drop-pii", None),
+                # A stable pseudonym instead of the learner number, so scored records can be followed up.
+                ("privacy-keep-masked", {"columns": ["learner_id"], "method": "hash"}),
+            ],
+        )
+        created.append("learner-progress")
+
+    if await session.get(Dataset, "learner-progress-monthly") is None:
+        await datasets.ingest_frame(
+            session,
+            actors["sipho"],
+            monthly_frame(),
+            name="Learner progress, monthly",
+            preferred_id="learner-progress-monthly",
+            table_name="learner_progress_monthly",
+            description=(
+                "Starts, enrolled learners, drop-outs and graduates by month, programme, province and SETA across "
+                "the provider network. Synthetic showcase data."
+            ),
+            source="connector",
+            source_name="Training management system · monthly progress",
+            classification="internal-confidential",
+            visibility="organisation",
+            connector_id="wh-analytics",
+        )
+        await session.commit()
+        await _clean_and_approve(
+            session,
+            actors["sipho"],
+            actors["naledi"],
+            "learner-progress-monthly",
+            [("type-coerce-sentinels", None)],
+        )
+        created.append("learner-progress-monthly")
 
     await _dashboards(session)
     await _monitors(session)

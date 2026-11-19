@@ -66,12 +66,12 @@ async def test_health_preview_sql_explorations(client: AsyncClient, sign_in: Sig
     )
     assert long_name.status_code == 422
 
-    # pending silver / unknown table not queryable
-    pending = await client.post(
-        "/api/v1/sql/run",
-        headers=analyst,
-        json={"sql": f"SELECT * FROM silver.{did.replace('-', '_')}"},
-    )
+    # The owner may analyse their own masked working copy before approval; nobody else may.
+    table_sql = {"sql": f"SELECT * FROM silver.{did.replace('-', '_')}"}
+    own = await client.post("/api/v1/sql/run", headers=analyst, json=table_sql)
+    assert own.status_code == 200 and own.json().get("refused") is False
+    other = await sign_in("practitioner")
+    pending = await client.post("/api/v1/sql/run", headers=other, json=table_sql)
     assert pending.status_code in (200, 422)
     if pending.status_code == 200:
         assert pending.json().get("refused") is True

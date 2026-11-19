@@ -12,6 +12,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -433,9 +434,18 @@ class Alert(Base):
     explore: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     acknowledged_by: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Alerts from the scheduled anomaly scan have no monitor; they belong to a dataset instead.
+    dataset_id: Mapped[str | None] = mapped_column(ForeignKey("datasets.id", ondelete="CASCADE"))
+    source: Mapped[str] = mapped_column(
+        String(16), default="monitor", server_default="monitor"
+    )  # monitor | scan
+    series: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)  # the points behind the chart
+    detector: Mapped[dict[str, Any] | None] = mapped_column(JSONB)  # method, z, expected band
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), default=utcnow
     )
+
+    __table_args__ = (Index("ix_alerts_dataset_month", "dataset_id", "month"),)
 
 
 class ModelVersion(Base):
@@ -449,10 +459,61 @@ class ModelVersion(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     dataset_id: Mapped[str] = mapped_column(ForeignKey("datasets.id", ondelete="CASCADE"))
     factors: Mapped[list[dict[str, Any]]] = mapped_column(JSONB)
-    status: Mapped[str] = mapped_column(String(16), default="active")  # active | retired
+    # draft (awaiting review) | active (approved, in use) | retired | rejected
+    status: Mapped[str] = mapped_column(String(16), default="draft")
+    # heuristic: documented weighted factors. trained: fitted and validated on labelled data.
+    kind: Mapped[str] = mapped_column(String(16), default="heuristic", server_default="heuristic")
     created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     reviewed_by: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Trained models only.
+    algorithm: Mapped[str | None] = mapped_column(String(40))
+    target: Mapped[dict[str, Any] | None] = mapped_column(JSONB)  # outcome column, labels, wording
+    features: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)  # each column, its use and why
+    protected: Mapped[list[str] | None] = mapped_column(JSONB)  # audited for fairness, never used to score
+    metrics: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    fairness: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    card: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    reference: Mapped[dict[str, Any] | None] = mapped_column(JSONB)  # training distributions, for drift
+    runtime: Mapped[dict[str, Any] | None] = mapped_column(JSONB)  # library versions it was trained with
+    drift: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    threshold: Mapped[float | None] = mapped_column(Float)
+    training_dataset_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("dataset_versions.id", ondelete="SET NULL")
+    )
+    training_rows: Mapped[int | None] = mapped_column(Integer)
+    trained_by: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    approved_by: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decision_note: Mapped[str | None] = mapped_column(Text)
+    # The fitted pipeline, encrypted. Deferred so listing models never loads it.
+    artifact: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)
+    artifact_sha256: Mapped[str | None] = mapped_column(String(64))
+    drift_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), default=utcnow
+    )
+
+
+class ScoringRun(Base):
+    """One application of a trained model to a dataset's current records."""
+
+    __tablename__ = "scoring_runs"
+    __table_args__ = (Index("ix_scoring_runs_model_created", "model_version_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    model_version_id: Mapped[str] = mapped_column(ForeignKey("model_versions.id", ondelete="CASCADE"))
+    dataset_id: Mapped[str] = mapped_column(ForeignKey("datasets.id", ondelete="CASCADE"))
+    dataset_version: Mapped[int] = mapped_column(Integer)
+    requested_by: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    scores_table: Mapped[str] = mapped_column(String(140))
+    population: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    rows_scored: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    flagged: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    threshold: Mapped[float | None] = mapped_column(Float)
+    summary: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    fairness: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    drift: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), default=utcnow
     )
@@ -528,8 +589,33 @@ class AssistantQuery(Base):
     result_table: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     build: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     planner: Mapped[str] = mapped_column(String(16), default="rules")
-    channel: Mapped[str] = mapped_column(String(16), default="web")  # web | slack
+    channel: Mapped[str] = mapped_column(String(16), default="web")  # web | slack | eval
     latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    # Each governance step the answer went through, and the chart the answer was drawn with.
+    trace: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
+    chart: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), default=utcnow
+    )
+
+
+class Report(Base):
+    """A generated report: governed figures, each with the SQL behind it, and a narrative."""
+
+    __tablename__ = "reports"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    template_id: Mapped[str] = mapped_column(String(80))
+    title: Mapped[str] = mapped_column(String(300))
+    period: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    datasets: Mapped[dict[str, Any] | None] = mapped_column(JSONB)  # template role -> dataset id
+    figures: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
+    narrative: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
+    narrative_source: Mapped[str] = mapped_column(
+        String(16), default="template", server_default="template"
+    )  # template | model
+    model: Mapped[str | None] = mapped_column(String(80))
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), default=utcnow
     )
