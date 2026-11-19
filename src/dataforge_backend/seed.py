@@ -796,7 +796,11 @@ async def seed_demo(session: AsyncSession) -> dict[str, Any]:
             actors["naledi"],
             "learner-progress",
             [
-                ("type-coerce-sentinels", None),
+                # 0/1 indicator columns would otherwise be read as yes/no flags; they are counts to add up.
+                (
+                    "type-coerce-sentinels",
+                    {"types": {"starts": "integer", "completed": "integer", "dropped": "integer"}},
+                ),
                 # ID numbers are not needed for analysis; bronze keeps them for a steward.
                 ("struct-drop-pii", None),
                 # A stable pseudonym instead of the learner number, so scored records can be followed up.

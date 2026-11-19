@@ -19,7 +19,8 @@ async def test_learner_records_are_cleaned_masked_and_approved(client: AsyncClie
     dataset = await _get(client, "/api/v1/datasets/learner-progress", analyst)
     assert dataset["status"] == "approved" and dataset["layer"] == "silver" and dataset["queryable"] is True
     assert dataset["classification"] == "restricted-personal"
-    assert {"full_name", "cell_number", "id_number"} <= set(dataset["piiColumns"])
+    # The ID number column is dropped by cleaning, so only the masked personal columns remain listed.
+    assert {"full_name", "cell_number"} <= set(dataset["piiColumns"])
 
     preview = await _get(client, "/api/v1/datasets/learner-progress/rows?limit=20", analyst)
     columns = preview["columns"]
@@ -50,6 +51,7 @@ async def test_the_assistant_answers_the_dropout_rate_from_the_governed_metric(
     assert response.status_code == 200, response.text
     turn = response.json()
     assert turn["refused"] is False, turn
-    assert turn["build"]["datasetId"] == "learner-progress"
+    assert "build" in turn, turn
+    assert turn["build"]["dataset"] == "learner-progress"
     assert turn["build"]["measure"] == "dropout_rate", turn["build"]
     assert "programme_type" in turn["sql"]
