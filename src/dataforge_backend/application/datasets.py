@@ -283,8 +283,11 @@ async def ingest_frame(
         dataset.decided_at = None
         dataset.decided_by = None
         dataset.decision_reason = None
+        # Upload findings are recomputed for the new data; anomaly findings point at alerts and stay.
         await session.execute(
-            delete(Insight).where(Insight.dataset_id == dataset.id, Insight.status == "open")
+            delete(Insight).where(
+                Insight.dataset_id == dataset.id, Insight.status == "open", Insight.kind != "anomaly"
+            )
         )
     dataset.rows = rows
     dataset.size_bytes = size

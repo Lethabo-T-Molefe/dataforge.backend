@@ -5,8 +5,9 @@ from typing import Any
 from fastapi import APIRouter, Depends, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ....application import dashboards, metrics, monitors, predictions
+from ....application import anomalies, audit, dashboards, metrics, monitors, predictions
 from ....application.common import Actor
+from ....domain.roles import Permission
 from ..deps import current_actor, data_actor, get_db
 from ..schemas import ChartIn, DashboardIn, DashboardUpdateIn, EmbedIn, FreeBody, ScoreIn, ShareIn
 
@@ -216,9 +217,30 @@ async def check_monitor(
 
 @router.get("/alerts")
 async def list_alerts(
-    actor: Actor = Depends(current_actor), session: AsyncSession = Depends(get_db)
+    source: str | None = None,
+    actor: Actor = Depends(current_actor),
+    session: AsyncSession = Depends(get_db),
 ) -> list[dict[str, Any]]:
-    return await monitors.list_alerts(session, actor)
+    """Alerts the member may see: from their monitors, and (source=scan) from the scheduled anomaly scan."""
+    return await monitors.list_alerts(session, actor, source=source)
+
+
+@router.get("/insights/feed")
+async def insight_feed(
+    actor: Actor = Depends(current_actor), session: AsyncSession = Depends(get_db)
+) -> dict[str, Any]:
+    """Unusual months the scheduled scan found in governed metrics, with when it last ran."""
+    return await anomalies.feed(session, actor)
+
+
+@router.post("/insights/scan")
+async def run_scan(
+    actor: Actor = Depends(current_actor), session: AsyncSession = Depends(get_db)
+) -> dict[str, Any]:
+    """Run the anomaly scan now (Data Steward or Administrator)."""
+    actor.require(Permission.APPROVE, "Only a Data Steward or an Administrator runs the scan on demand.")
+    await audit.record(session, actor, "Requested anomaly scan", "scan", None, "Anomaly scan")
+    return await anomalies.scan(session)
 
 
 @router.get("/alerts/{alert_id}")

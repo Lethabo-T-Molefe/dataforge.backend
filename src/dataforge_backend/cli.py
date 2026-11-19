@@ -6,6 +6,8 @@ dataforge create-admin            create or promote an administrator
 dataforge evaluate-monitors       evaluate due monitors once (for cron, instead of the in-process scheduler)
 dataforge refresh-connectors      refresh connectors whose schedule is due, once (for cron)
 dataforge superset-sync           register approved datasets, metrics and row policies in Superset
+dataforge scan-anomalies          run the anomaly scan over governed metrics once
+dataforge backtest-anomalies      compare the anomaly detector with the band rule; report in evals/anomaly/
 dataforge serve                   run the API
 """
 
@@ -220,6 +222,41 @@ def superset_sync() -> None:
             await engine.dispose()
 
     typer.echo(json.dumps(_run(go()), indent=2))
+
+
+@app.command("scan-anomalies")
+def scan_anomalies() -> None:
+    """Run the anomaly scan over governed metrics once and print what it found (for cron, or to demo it)."""
+
+    async def go() -> dict[str, Any]:
+        from .application import anomalies
+        from .core.database import SessionLocal, engine
+
+        try:
+            async with SessionLocal() as session:
+                return await anomalies.scan(session)
+        finally:
+            await engine.dispose()
+
+    result = _run(go())
+    typer.echo(f"{result['scanned']} dataset(s) scanned, {len(result['found'])} new finding(s).")
+    for alert in result["found"]:
+        typer.echo(f"- {alert['metric']} ({alert['month']}): {alert['message']}")
+
+
+@app.command("backtest-anomalies")
+def backtest_anomalies(synthetic: int = 200, out: Path | None = None) -> None:
+    """Compare the robust detector with the band rule and write the report to evals/anomaly/.
+
+    Needs no database: it replays the showcase's monthly data and seeded synthetic series.
+    """
+    from . import evals
+
+    use_utf8_output()
+    data, markdown = evals.anomaly_backtest(synthetic)
+    path = evals.write("anomaly", "backtest", data, markdown, out)
+    typer.echo(markdown)
+    typer.echo(f"Written to {path}.json and {path}.md")
 
 
 @app.command()

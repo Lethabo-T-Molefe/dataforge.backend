@@ -3,12 +3,14 @@
 import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
+from . import anomaly
 from .analysis.format import format_delta, format_percent, format_value, js_fixed
 from .analysis.stats import mean, standard_deviation
 from .values import thousands
 
-RULE_KINDS = ("change", "above", "below", "band")
+RULE_KINDS = ("change", "above", "below", "band", "anomaly")
 CADENCES = {"hourly": 3600, "daily": 86_400, "weekly": 604_800}
 
 
@@ -31,16 +33,25 @@ class MonitorRule:
             return f"Alert if the value crosses above {format_value(self.threshold, unit)}"
         if self.kind == "below":
             return f"Alert if the value drops below {format_value(self.threshold, unit)}"
+        if self.kind == "anomaly":
+            return (
+                f"Alert if a month is unusually far from its expected level, allowing for season and trend "
+                f"(more than {self.threshold:g} robust standard deviations)"
+            )
         return f"Alert if the value leaves its expected band (±{self.threshold:g} standard deviations of the last {self.window} months)"
 
 
 def validate_rule(rule: MonitorRule) -> MonitorRule:
     if rule.kind not in RULE_KINDS:
         raise MonitorError(f"Rule must be one of {', '.join(RULE_KINDS)}.")
-    if not math.isfinite(rule.threshold) or (rule.kind in ("change", "band") and rule.threshold <= 0):
+    if not math.isfinite(rule.threshold) or (
+        rule.kind in ("change", "band", "anomaly") and rule.threshold <= 0
+    ):
         raise MonitorError("The threshold must be a positive number.")
     if rule.kind == "band" and not 3 <= rule.window <= 36:
         raise MonitorError("The band needs between 3 and 36 months of history.")
+    if rule.kind == "anomaly" and not 2 <= rule.threshold <= 6:
+        raise MonitorError("For an unusual-month alert, use a sensitivity between 2 and 6 (3.5 is typical).")
     return rule
 
 
@@ -54,6 +65,49 @@ class Evaluation:
     value: float | None
     previous: float | None
     expected: tuple[float, float] | None = None
+    # The months behind the verdict, for a chart (value, expected value and band), and how it was judged.
+    points: tuple[dict[str, Any], ...] = ()
+    detector: dict[str, Any] | None = None
+
+
+def _anomaly(
+    points: list[tuple[str, float]], rule: MonitorRule, fmt: Callable[[float], str], name: str
+) -> Evaluation:
+    (prev_month, prev), (month, latest) = points[-2], points[-1]
+    verdict = anomaly.detect(points, rule.threshold)
+    if verdict.method == "insufficient" or verdict.expected is None or verdict.z is None:
+        return Evaluation(
+            False,
+            f"An expected level needs at least {anomaly.MIN_TREND_HISTORY + 1} months of data.",
+            "low",
+            month,
+            prev_month,
+            latest,
+            prev,
+            detector=verdict.to_dict(),
+        )
+    low, high = float(verdict.low or 0), float(verdict.high or 0)
+    if verdict.unusual:
+        moved = "Rose" if verdict.direction == "above" else "Fell"
+        message = (
+            f"{moved} to {fmt(latest)} in {name}, against an expected {fmt(verdict.expected)}: "
+            f"{js_fixed(abs(verdict.z), 1)} robust standard deviations {verdict.direction} it"
+        )
+    else:
+        message = f"Within its expected range ({fmt(low)} – {fmt(high)}) in {name}"
+    severity = "high" if verdict.unusual and abs(verdict.z) >= 1.5 * rule.threshold else "low"
+    return Evaluation(
+        verdict.unusual,
+        message,
+        severity,
+        month,
+        prev_month,
+        latest,
+        prev,
+        (low, high),
+        points=tuple(verdict.points),
+        detector=verdict.to_dict(),
+    )
 
 
 def evaluate(
@@ -68,6 +122,9 @@ def evaluate(
 
     def fmt(v: float) -> str:
         return format_value(v, unit)
+
+    if rule.kind == "anomaly":
+        return _anomaly(points, rule, fmt, name)
 
     if rule.kind == "change":
         pct = math.nan if prev == 0 else (latest - prev) / abs(prev) * 100
@@ -121,7 +178,29 @@ def evaluate(
     else:
         message = f"Within the expected band ({fmt(low)} – {fmt(high)}) in {name}"
     severity = "high" if triggered and latest < low else "low"
-    return Evaluation(triggered, message, severity, month, prev_month, latest, prev, (low, high))
+    chart = tuple(
+        {
+            "month": m,
+            "value": v,
+            "expected": centre if m == month else None,
+            "low": low if m == month else None,
+            "high": high if m == month else None,
+            "anomaly": triggered and m == month,
+        }
+        for m, v in points
+    )
+    return Evaluation(
+        triggered,
+        message,
+        severity,
+        month,
+        prev_month,
+        latest,
+        prev,
+        (low, high),
+        points=chart,
+        detector={"method": "band", "z": (latest - centre) / spread if spread else None, "k": rule.threshold},
+    )
 
 
 @dataclass(frozen=True)

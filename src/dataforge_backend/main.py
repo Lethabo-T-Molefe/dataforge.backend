@@ -11,7 +11,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from slowapi.middleware import SlowAPIMiddleware
 from sqlalchemy import text
 
-from .application import integrations, monitors, refresh
+from .application import anomalies, integrations, monitors, refresh
 from .core.config import settings
 from .core.database import SessionLocal, engine
 from .core.logging import configure_logging, get_logger
@@ -28,7 +28,7 @@ _SCHEDULER_LOCK = 42_1017
 
 
 async def _scheduler_loop() -> None:
-    """Refresh due connectors, then evaluate due monitors (so they see the fresh data), on an interval.
+    """Refresh due connectors, evaluate due monitors (so they see the fresh data), then scan for anomalies.
 
     Only the replica holding the advisory lock does the work.
     """
@@ -52,6 +52,12 @@ async def _scheduler_loop() -> None:
                                 count=len(results),
                                 alerts=sum(1 for r in results if r.get("alert")),
                             )
+                        async with SessionLocal() as session:
+                            if await anomalies.scan_due(session):
+                                scanned = await anomalies.scan(session)
+                                log.info(
+                                    "anomaly_scan", datasets=scanned["scanned"], found=len(scanned["found"])
+                                )
                     finally:
                         await conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": _SCHEDULER_LOCK})
         except Exception as error:  # noqa: BLE001 - the loop must survive a failed round

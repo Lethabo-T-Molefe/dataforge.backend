@@ -1,0 +1,288 @@
+{
+  "provenance": {
+    "command": "dataforge backtest-anomalies --synthetic 200",
+    "generatedAt": "2026-11-19T05:55:59+00:00",
+    "commit": "e4ffdb3",
+    "python": "3.15.2",
+    "seed": "0..{synthetic}"
+  },
+  "settings": {
+    "k": 3.5,
+    "bandK": 3.0,
+    "bandWindow": 12,
+    "judgedFrom": "month 25"
+  },
+  "showcase": {
+    "metric": "Monthly drop-outs by province (learner-progress-monthly)",
+    "planted": {
+      "month": "2026-08",
+      "province": "KwaZulu-Natal",
+      "seta": "W&RSETA",
+      "employer": "Ilanga Fresh Stores",
+      "factor": 4.5,
+      "reason": "Stipend payments at one host employer were late for two months."
+    },
+    "series": [
+      {
+        "series": "All provinces",
+        "planted": [],
+        "robust": {
+          "method": "robust",
+          "flagged": [],
+          "truePositives": 0,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        },
+        "band": {
+          "method": "band",
+          "flagged": [],
+          "truePositives": 0,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        }
+      },
+      {
+        "series": "Eastern Cape",
+        "planted": [],
+        "robust": {
+          "method": "robust",
+          "flagged": [],
+          "truePositives": 0,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        },
+        "band": {
+          "method": "band",
+          "flagged": [],
+          "truePositives": 0,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        }
+      },
+      {
+        "series": "Free State",
+        "planted": [],
+        "robust": {
+          "method": "robust",
+          "flagged": [],
+          "truePositives": 0,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        },
+        "band": {
+          "method": "band",
+          "flagged": [],
+          "truePositives": 0,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        }
+      },
+      {
+        "series": "Gauteng",
+        "planted": [],
+        "robust": {
+          "method": "robust",
+          "flagged": [],
+          "truePositives": 0,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        },
+        "band": {
+          "method": "band",
+          "flagged": [],
+          "truePositives": 0,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        }
+      },
+      {
+        "series": "KwaZulu-Natal",
+        "planted": [
+          "2026-08"
+        ],
+        "robust": {
+          "method": "robust",
+          "flagged": [
+            "2026-08"
+          ],
+          "truePositives": 1,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        },
+        "band": {
+          "method": "band",
+          "flagged": [],
+          "truePositives": 0,
+          "falsePositives": 0,
+          "falseNegatives": 1,
+          "precision": 1.0,
+          "recall": 0.0
+        }
+      },
+      {
+        "series": "Limpopo",
+        "planted": [],
+        "robust": {
+          "method": "robust",
+          "flagged": [],
+          "truePositives": 0,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        },
+        "band": {
+          "method": "band",
+          "flagged": [],
+          "truePositives": 0,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        }
+      },
+      {
+        "series": "Mpumalanga",
+        "planted": [],
+        "robust": {
+          "method": "robust",
+          "flagged": [],
+          "truePositives": 0,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        },
+        "band": {
+          "method": "band",
+          "flagged": [],
+          "truePositives": 0,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        }
+      },
+      {
+        "series": "North West",
+        "planted": [],
+        "robust": {
+          "method": "robust",
+          "flagged": [],
+          "truePositives": 0,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        },
+        "band": {
+          "method": "band",
+          "flagged": [],
+          "truePositives": 0,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        }
+      },
+      {
+        "series": "Northern Cape",
+        "planted": [],
+        "robust": {
+          "method": "robust",
+          "flagged": [
+            "2026-04"
+          ],
+          "truePositives": 0,
+          "falsePositives": 1,
+          "falseNegatives": 0,
+          "precision": 0.0,
+          "recall": 1.0
+        },
+        "band": {
+          "method": "band",
+          "flagged": [
+            "2026-04"
+          ],
+          "truePositives": 0,
+          "falsePositives": 1,
+          "falseNegatives": 0,
+          "precision": 0.0,
+          "recall": 1.0
+        }
+      },
+      {
+        "series": "Western Cape",
+        "planted": [],
+        "robust": {
+          "method": "robust",
+          "flagged": [],
+          "truePositives": 0,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        },
+        "band": {
+          "method": "band",
+          "flagged": [],
+          "truePositives": 0,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        }
+      }
+    ],
+    "totals": {
+      "robust": {
+        "truePositives": 1,
+        "falsePositives": 1,
+        "falseNegatives": 0
+      },
+      "band": {
+        "truePositives": 0,
+        "falsePositives": 1,
+        "falseNegatives": 1
+      }
+    }
+  },
+  "synthetic": {
+    "series": 200,
+    "judgedFrom": "month 25 of 36",
+    "k": 3.5,
+    "bandK": 3.0,
+    "robust": {
+      "truePositives": 239,
+      "falsePositives": 21,
+      "falseNegatives": 29,
+      "precision": 0.919,
+      "recall": 0.892
+    },
+    "band": {
+      "truePositives": 73,
+      "falsePositives": 4,
+      "falseNegatives": 195,
+      "precision": 0.948,
+      "recall": 0.272
+    }
+  }
+}

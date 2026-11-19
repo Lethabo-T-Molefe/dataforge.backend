@@ -22,7 +22,7 @@ from ..domain.monitoring import (
 )
 from ..domain.roles import Permission
 from ..infrastructure import notifications
-from ..infrastructure.db.models import Alert, Monitor, User
+from ..infrastructure.db.models import Alert, Monitor, RowPolicy, User
 from . import analysis, audit, catalogue, inbox
 from .common import SYSTEM, Actor, humanize
 
@@ -65,6 +65,8 @@ def alert_dict(alert: Alert) -> dict[str, Any]:
     return {
         "id": alert.id,
         "monitorId": alert.monitor_id,
+        "datasetId": alert.dataset_id,
+        "source": alert.source or "monitor",
         "metric": alert.metric,
         "message": alert.message,
         "when": humanize(alert.created_at),
@@ -75,7 +77,39 @@ def alert_dict(alert: Alert) -> dict[str, Any]:
         "acknowledged": alert.acknowledged_at is not None,
         "month": alert.month,
         "previousMonth": alert.previous_month,
+        "value": alert.value,
+        "series": alert.series or [],
+        "detector": alert.detector,
     }
+
+
+def comparison_month(months: list[str], month: str, previous: str, detector: dict[str, Any] | None) -> str:
+    """The month a change is explained against: the same month last year when the baseline is seasonal."""
+    if detector and detector.get("method") == "seasonal":
+        year, mon = month.split("-")
+        last_year = f"{int(year) - 1:04d}-{mon}"
+        if last_year in months:
+            return last_year
+    return previous
+
+
+async def _policy_datasets(session: AsyncSession, actor: Actor) -> set[str]:
+    """Datasets on which the member's role sees only some rows."""
+    rows = await session.execute(select(RowPolicy.dataset_id).where(RowPolicy.role == actor.role))
+    return {r[0] for r in rows}
+
+
+def _can_see(
+    alert: Alert,
+    monitor: Monitor | None,
+    actor: Actor,
+    datasets: dict[str, AnalysisDataset],
+    restricted: set[str],
+) -> bool:
+    if monitor is not None:
+        return monitor.dataset_id in datasets or monitor.owner_id == actor.id
+    # Scan alerts are computed over every row, so a role that sees only some rows does not get them.
+    return alert.source == "scan" and alert.dataset_id in datasets and alert.dataset_id not in restricted
 
 
 async def _datasets(session: AsyncSession, actor: Actor) -> dict[str, AnalysisDataset]:
@@ -209,8 +243,21 @@ async def delete(session: AsyncSession, actor: Actor, monitor_id: str) -> None:
 async def _root_cause(
     session: AsyncSession, actor: Actor, dataset: AnalysisDataset, monitor: Monitor, before: str, after: str
 ) -> list[dict[str, str]]:
-    measure = dataset.measures[monitor.measure]
-    dims = [d for d in dataset.dimensions if d not in monitor.filters]
+    return await root_cause_for(session, actor, dataset, monitor.measure, monitor.filters, before, after)
+
+
+async def root_cause_for(
+    session: AsyncSession,
+    actor: Actor,
+    dataset: AnalysisDataset,
+    measure_id: str,
+    filters: dict[str, str],
+    before: str,
+    after: str,
+) -> list[dict[str, str]]:
+    """Which groups and effects account for a metric's change between two months, in plain words."""
+    measure = dataset.measures[measure_id]
+    dims = [d for d in dataset.dimensions if d not in filters]
     breakdowns: dict[str, list[GroupChange]] = {}
     for dim in dims:
         rows = await analysis.query_groups(
@@ -219,7 +266,7 @@ async def _root_cause(
             dataset,
             {"v": measure.id},
             [dim, MONTH_DIMENSION],
-            monitor.filters,
+            filters,
             pair=(before, after),
             parts=["v"],
             kind="monitor",
@@ -247,7 +294,7 @@ async def _root_cause(
         dataset,
         {"v": measure.id},
         [MONTH_DIMENSION],
-        monitor.filters,
+        filters,
         pair=(before, after),
         kind="monitor",
     )
@@ -283,7 +330,7 @@ async def _root_cause(
                 dataset,
                 {"v": volume.id},
                 [MONTH_DIMENSION],
-                monitor.filters,
+                filters,
                 pair=(before, after),
                 kind="monitor",
             )
@@ -320,18 +367,25 @@ async def evaluate_monitor(session: AsyncSession, monitor: Monitor) -> dict[str,
             select(Alert.id).where(Alert.monitor_id == monitor.id, Alert.month == result.month)
         )
         if existing.first() is None:
-            cause = await _root_cause(session, actor, dataset, monitor, result.previous_month, result.month)
+            before = comparison_month(
+                [m for m, _ in series], result.month, result.previous_month, result.detector
+            )
+            cause = await _root_cause(session, actor, dataset, monitor, before, result.month)
             scope = " · ".join(monitor.filters.values())
             first_dim = next((d for d in dataset.dimensions if d not in monitor.filters), None)
             alert = Alert(
                 monitor_id=monitor.id,
+                dataset_id=dataset.id,
+                source="monitor",
                 metric=f"{measure.label}{f' · {scope}' if scope else ''}",
                 message=result.message,
                 severity=result.severity,
                 month=result.month,
-                previous_month=result.previous_month,
+                previous_month=before,
                 value=result.value,
                 previous=result.previous,
+                series=list(result.points),
+                detector=result.detector,
                 root_cause=cause,
                 explore={
                     "dataset": dataset.id,
@@ -405,31 +459,45 @@ async def evaluate_due(session: AsyncSession) -> list[dict[str, Any]]:
     return results
 
 
-async def list_alerts(session: AsyncSession, actor: Actor, limit: int = 50) -> list[dict[str, Any]]:
+async def list_alerts(
+    session: AsyncSession, actor: Actor, limit: int = 50, source: str | None = None
+) -> list[dict[str, Any]]:
     datasets = await _datasets(session, actor)
-    rows = await session.execute(
-        select(Alert, Monitor)
-        .outerjoin(Monitor, Monitor.id == Alert.monitor_id)
-        .order_by(Alert.created_at.desc())
-        .limit(limit)
-    )
-    return [
-        alert_dict(a)
-        for a, m in rows
-        if m is not None and (m.dataset_id in datasets or m.owner_id == actor.id)
-    ]
+    restricted = await _policy_datasets(session, actor)
+    stmt = select(Alert, Monitor).outerjoin(Monitor, Monitor.id == Alert.monitor_id)
+    if source:
+        stmt = stmt.where(Alert.source == source)
+    rows = await session.execute(stmt.order_by(Alert.created_at.desc()).limit(limit))
+    return [alert_dict(a) for a, m in rows if _can_see(a, m, actor, datasets, restricted)]
 
 
 async def get_alert(session: AsyncSession, actor: Actor, alert_id: str) -> dict[str, Any]:
     alert = await session.get(Alert, alert_id)
     monitor = await session.get(Monitor, alert.monitor_id) if alert and alert.monitor_id else None
     datasets = await _datasets(session, actor)
-    if (
-        alert is None
-        or monitor is None
-        or (monitor.dataset_id not in datasets and monitor.owner_id != actor.id)
-    ):
+    restricted = await _policy_datasets(session, actor)
+    if alert is None or not _can_see(alert, monitor, actor, datasets, restricted):
         raise NotFound("Alert not found.")
+    if not alert.series and monitor is not None and monitor.dataset_id in datasets:
+        # Alerts raised before charts were stored: rebuild the series from the monitor's own query.
+        dataset = datasets[monitor.dataset_id]
+        if monitor.measure in dataset.measures:
+            rows = await analysis.query_groups(
+                session,
+                actor,
+                dataset,
+                {"v": monitor.measure},
+                [MONTH_DIMENSION],
+                monitor.filters,
+                kind="monitor",
+            )
+            series = sorted((str(r["d0"]), float(r["v"])) for r in rows if r["v"] is not None)
+            upto = [p for p in series if alert.month is None or p[0] <= alert.month]
+            result = evaluate(
+                upto, _rule(monitor), dataset.measures[monitor.measure].unit, dataset.month_label
+            )
+            alert.series = list(result.points)
+            alert.detector = alert.detector or result.detector
     await audit.record(session, actor, "Viewed root cause", "alert", alert.id, alert.metric)
     await session.commit()
     return alert_dict(alert)
