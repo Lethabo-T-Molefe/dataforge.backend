@@ -2,9 +2,9 @@
 
 from fastapi import APIRouter
 
-from . import admin, analysis, auth, cleaning, connectors, datasets, insights, models, platform
+from . import admin, analysis, auth, cleaning, connectors, datasets, insights, models, platform, reports
 
 router = APIRouter()
 # models comes before insights so its /predictions/models/... paths are matched first.
-for module in (auth, admin, datasets, cleaning, connectors, analysis, models, insights, platform):
+for module in (auth, admin, datasets, cleaning, connectors, analysis, models, insights, reports, platform):
     router.include_router(module.router)

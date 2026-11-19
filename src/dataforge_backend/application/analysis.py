@@ -120,10 +120,13 @@ async def query_groups(
     parts: list[str] | None = None,
     rate_method: str = "pooled",
     kind: str = "analysis",
+    trace: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Values of measures per group, under the member's row policy. `measures` maps an alias to a measure id.
 
     Rows carry d0, d1, … for the dimensions, each alias, and <alias>_num / <alias>_den for aliases in `parts`.
+    With `trace`, the SQL, its parameters and the sandbox session are appended to it, so a figure can show
+    exactly how it was computed and be recomputed later.
     """
     months = dataset.months
     body: dict[str, Any] = {
@@ -150,6 +153,15 @@ async def query_groups(
         query.sql, user_id=actor.member_id, kind=kind, params=query.params, max_rows=50_000
     )
     await quotas.add_compute(session, actor.member_id, result.duration_ms)
+    if trace is not None:
+        trace.append(
+            {
+                "sql": query.sql,
+                "params": {k: str(v) for k, v in (query.params or {}).items()},
+                "sessionId": result.session_id,
+                "rowPolicy": bool(policy),
+            }
+        )
     return [dict(zip(result.columns, row, strict=True)) for row in result.rows]
 
 
