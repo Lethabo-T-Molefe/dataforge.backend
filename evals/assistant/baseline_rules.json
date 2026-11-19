@@ -1,6 +1,6 @@
 {
-  "note": "The rule-based planner's recorded results on questions_v1.jsonl. CI fails if a change lowers any of them; raise them when the planner improves.",
-  "executionAccuracy": 0.0,
-  "planAccuracy": 0.0,
-  "refusalRecall": 0.0
+  "note": "The rule-based planner's recorded results on questions_v1.jsonl (first CI run, commit 35b9ac0). CI fails if a change lowers any of them. The questions were written with knowledge of the planner's phrasing rules, so these are an upper bound; see paraphrase sets for robustness.",
+  "executionAccuracy": 1.0,
+  "planAccuracy": 1.0,
+  "refusalRecall": 1.0
 }
