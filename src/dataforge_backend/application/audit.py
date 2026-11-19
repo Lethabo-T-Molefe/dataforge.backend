@@ -26,22 +26,25 @@ async def record(
     resource_label: str = "",
     detail: str = "",
     meta: dict[str, Any] | None = None,
-) -> None:
-    """Add an entry to the current transaction, so it commits (or rolls back) with the action it describes."""
-    session.add(
-        AuditEvent(
-            actor_id=actor.member_id if actor else None,
-            actor_label=actor.name if actor else "System",
-            action=action,
-            resource_type=resource_type,
-            resource_id=resource_id,
-            resource_label=resource_label[:300],
-            detail=detail[:4000],
-            request_id=actor.request_id if actor else None,
-            ip=actor.ip if actor else None,
-            meta=meta,
-        )
+) -> AuditEvent:
+    """Add an entry to the current transaction, so it commits (or rolls back) with the action it describes.
+
+    Returns the entry; its id is set once the session flushes, so a caller can point at it.
+    """
+    event = AuditEvent(
+        actor_id=actor.member_id if actor else None,
+        actor_label=actor.name if actor else "System",
+        action=action,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        resource_label=resource_label[:300],
+        detail=detail[:4000],
+        request_id=actor.request_id if actor else None,
+        ip=actor.ip if actor else None,
+        meta=meta,
     )
+    session.add(event)
+    return event
 
 
 def _when(moment: datetime, now: datetime) -> str:

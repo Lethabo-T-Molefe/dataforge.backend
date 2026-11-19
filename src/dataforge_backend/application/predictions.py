@@ -1,4 +1,9 @@
-"""Guided scoring: documented model versions, cohort scores with factor breakdowns, and exports."""
+"""Guided scoring: documented model versions, cohort scores with factor breakdowns, and exports.
+
+Every model version, heuristic or trained, starts as a draft. A second person approves it before anyone can
+score with it: someone with the approve-models permission (a Data Steward or an Administrator) or another
+Model Curator, and never the person who built or trained that version.
+"""
 
 import io
 from typing import Any
@@ -6,7 +11,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..core.errors import Conflict, NotFound, ValidationFailed
+from ..core.errors import Conflict, Forbidden, NotFound, ValidationFailed
 from ..core.security import utcnow
 from ..domain.analysis import AnalysisDataset
 from ..domain.analysis.stats import median, quantile, standard_deviation
@@ -20,9 +25,25 @@ from ..domain.prediction import (
     validate_model,
 )
 from ..domain.roles import Permission
-from ..infrastructure.db.models import ModelVersion, Prediction
-from . import analysis, audit, catalogue
+from ..infrastructure.db.models import ModelVersion, Prediction, User
+from . import analysis, audit, catalogue, inbox
 from .common import Actor, humanize
+
+STATUSES = ("draft", "active", "retired", "rejected")
+_MIN_NOTE = 20
+
+
+def is_reviewer(actor: Actor) -> bool:
+    """Who sees drafts and decides on them: curators, and members with the approve-models permission."""
+    return actor.can(Permission.CURATE_MODELS) or actor.can(Permission.APPROVE_MODELS)
+
+
+async def _names(session: AsyncSession, ids: set[str]) -> dict[str, str]:
+    ids = {i for i in ids if i}
+    if not ids:
+        return {}
+    rows = await session.execute(select(User.id, User.name).where(User.id.in_(ids)))
+    return {r[0]: r[1] for r in rows}
 
 
 def model_spec(model: ModelVersion) -> ModelSpec:
@@ -36,7 +57,22 @@ def model_spec(model: ModelVersion) -> ModelSpec:
     )
 
 
-def model_dict(model: ModelVersion) -> dict[str, Any]:
+def metrics_summary(model: ModelVersion) -> dict[str, Any] | None:
+    """The few figures a list needs: test AUC, PR-AUC, recall at the threshold, and the gain over the heuristic."""
+    if not model.metrics:
+        return None
+    at = model.metrics.get("atThreshold") or {}
+    return {
+        "rocAuc": model.metrics.get("rocAuc"),
+        "prAuc": model.metrics.get("prAuc"),
+        "recall": at.get("recall"),
+        "precision": at.get("precision"),
+        "liftOverHeuristic": ((model.card or {}).get("performance") or {}).get("liftOverHeuristic"),
+    }
+
+
+def model_dict(model: ModelVersion, names: dict[str, str] | None = None) -> dict[str, Any]:
+    names = names or {}
     return {
         "id": model.id,
         "name": model.name,
@@ -45,9 +81,21 @@ def model_dict(model: ModelVersion) -> dict[str, Any]:
         "outcome": model.outcome,
         "description": model.description,
         "datasetId": model.dataset_id,
+        "kind": model.kind or "heuristic",
+        "algorithm": model.algorithm,
         "factors": model.factors,
         "weightsSum": round(sum(float(f["weight"]) for f in model.factors), 6),
         "status": model.status,
+        "target": model.target,
+        "threshold": model.threshold,
+        "metrics": metrics_summary(model),
+        "fairnessFlagged": bool((model.fairness or {}).get("flagged")),
+        "driftStatus": (model.drift or {}).get("status"),
+        "createdBy": names.get(model.created_by or "", None),
+        "trainedBy": names.get(model.trained_by or "", None),
+        "approvedBy": names.get(model.approved_by or "", None),
+        "approvedAt": model.approved_at.isoformat() if model.approved_at else None,
+        "decisionNote": model.decision_note,
         "createdAt": model.created_at.isoformat(),
         "reviewedAt": model.reviewed_at.isoformat() if model.reviewed_at else None,
     }
@@ -57,9 +105,113 @@ async def list_models(session: AsyncSession, actor: Actor) -> list[dict[str, Any
     actor.require(Permission.PREDICT)
     datasets = {d.id for d in await catalogue.analysis_catalogue(session, actor)}
     stmt = select(ModelVersion).order_by(ModelVersion.name, ModelVersion.created_at.desc())
-    if not actor.can(Permission.CURATE_MODELS):
+    if not is_reviewer(actor):
         stmt = stmt.where(ModelVersion.status == "active")
-    return [model_dict(m) for m in (await session.execute(stmt)).scalars() if m.dataset_id in datasets]
+    models = [m for m in (await session.execute(stmt)).scalars() if m.dataset_id in datasets]
+    names = await _names(
+        session, {u for m in models for u in (m.created_by, m.trained_by, m.approved_by) if u is not None}
+    )
+    return [model_dict(m, names) for m in models]
+
+
+async def _reviewable(session: AsyncSession, actor: Actor, model_id: str) -> ModelVersion:
+    if not is_reviewer(actor):
+        raise Forbidden("Only a Data Steward, an Administrator or a Model Curator decides on model versions.")
+    actor.require_verified()
+    model = await session.get(ModelVersion, model_id)
+    if model is None:
+        raise NotFound("Model version not found.")
+    return model
+
+
+async def approve(session: AsyncSession, actor: Actor, model_id: str, note: str | None) -> dict[str, Any]:
+    """Approve a draft for use. The approver is never the person who built or trained it."""
+    model = await _reviewable(session, actor, model_id)
+    if model.status != "draft":
+        raise Conflict(f"This version is {model.status}; only a draft is approved.")
+    if actor.id in {model.created_by, model.trained_by}:
+        raise Forbidden("A model version is approved by someone other than the person who built it.")
+    note = (note or "").strip()
+    if (model.fairness or {}).get("flagged") and len(note) < _MIN_NOTE:
+        raise ValidationFailed(
+            "The fairness audit raised a flag. Approving needs a note of at least 20 characters saying why "
+            "the model may still be used and how the flagged groups will be followed up."
+        )
+    for previous in (
+        await session.execute(
+            select(ModelVersion).where(
+                ModelVersion.name == model.name, ModelVersion.status == "active", ModelVersion.id != model.id
+            )
+        )
+    ).scalars():
+        previous.status = "retired"
+    model.status = "active"
+    model.approved_by = actor.id
+    model.approved_at = utcnow()
+    model.reviewed_by = actor.id
+    model.reviewed_at = model.approved_at
+    model.decision_note = note or None
+    label = f"{model.name} v{model.version}"
+    await audit.record(session, actor, "Approved model version", "model", model.id, label, note)
+    inbox.notify(
+        session,
+        [model.created_by, model.trained_by],
+        "model",
+        f"{label} was approved",
+        note or f"{actor.name} approved it for use.",
+        f"/models/{model.id}",
+        skip=actor.id,
+    )
+    await session.commit()
+    names = await _names(session, {u for u in (model.created_by, model.trained_by, model.approved_by) if u})
+    return model_dict(model, names)
+
+
+async def reject(session: AsyncSession, actor: Actor, model_id: str, reason: str | None) -> dict[str, Any]:
+    model = await _reviewable(session, actor, model_id)
+    if model.status != "draft":
+        raise Conflict(f"This version is {model.status}; only a draft is rejected.")
+    if actor.id in {model.created_by, model.trained_by}:
+        raise Forbidden("A model version is decided on by someone other than the person who built it.")
+    reason = (reason or "").strip()
+    if not reason:
+        raise ValidationFailed("Say why the version is rejected, so its author can fix it.")
+    model.status = "rejected"
+    model.reviewed_by = actor.id
+    model.reviewed_at = utcnow()
+    model.decision_note = reason
+    label = f"{model.name} v{model.version}"
+    await audit.record(session, actor, "Rejected model version", "model", model.id, label, reason)
+    inbox.notify(
+        session,
+        [model.created_by, model.trained_by],
+        "model",
+        f"{label} was rejected",
+        reason,
+        f"/models/{model.id}",
+        skip=actor.id,
+    )
+    await session.commit()
+    return model_dict(model, await _names(session, {u for u in (model.created_by, model.trained_by) if u}))
+
+
+async def retire(session: AsyncSession, actor: Actor, model_id: str, reason: str | None) -> dict[str, Any]:
+    model = await _reviewable(session, actor, model_id)
+    if model.status != "active":
+        raise Conflict(f"This version is {model.status}; only an active version is retired.")
+    model.status = "retired"
+    model.decision_note = (reason or "").strip() or model.decision_note
+    await audit.record(
+        session,
+        actor,
+        "Retired model version",
+        "model",
+        model.id,
+        f"{model.name} v{model.version}",
+        reason or "",
+    )
+    await session.commit()
+    return model_dict(model)
 
 
 async def create_version(session: AsyncSession, actor: Actor, body: dict[str, Any]) -> dict[str, Any]:
@@ -89,13 +241,7 @@ async def create_version(session: AsyncSession, actor: Actor, body: dict[str, An
         )
     ).scalar_one_or_none():
         raise Conflict(f"{spec.label} already exists. Versions are immutable; publish a new version number.")
-    if body.get("retirePrevious", True):
-        for previous in (
-            await session.execute(
-                select(ModelVersion).where(ModelVersion.name == spec.name, ModelVersion.status == "active")
-            )
-        ).scalars():
-            previous.status = "retired"
+    # A draft until someone else approves it; approving retires the version it replaces.
     model = ModelVersion(
         name=spec.name,
         version=spec.version,
@@ -103,24 +249,32 @@ async def create_version(session: AsyncSession, actor: Actor, body: dict[str, An
         description=spec.description,
         dataset_id=dataset.id,
         factors=[f.to_dict() for f in spec.factors],
-        status="active",
+        status="draft",
+        kind="heuristic",
         created_by=actor.id,
-        reviewed_by=actor.id,
-        reviewed_at=utcnow(),
     )
     session.add(model)
     await session.flush()
     await audit.record(
         session,
         actor,
-        "Published model version",
+        "Submitted model version for review",
         "model",
         model.id,
         spec.label,
         f"{len(factors)} factors, weights sum to 1.00",
     )
+    inbox.notify(
+        session,
+        await inbox.stewards(session),
+        "model",
+        f"{spec.label} is waiting for review",
+        f"{actor.name} submitted a documented heuristic for {dataset.name}.",
+        f"/models/{model.id}",
+        skip=actor.id,
+    )
     await session.commit()
-    return model_dict(model)
+    return model_dict(model, await _names(session, {actor.id}))
 
 
 def score_windows(months: list[str]) -> tuple[tuple[str, str], tuple[str, str]]:
@@ -209,12 +363,16 @@ async def score(
     actor.require_verified()
     if model_id:
         model = await session.get(ModelVersion, model_id)
+        # Drafts and retired versions are not for scoring, except by the people reviewing them.
+        if model is not None and model.status != "active" and not is_reviewer(actor):
+            model = None
     else:
+        # Cohort scoring uses documented heuristics. Trained models score records (see outcome_models).
         model = (
             (
                 await session.execute(
                     select(ModelVersion)
-                    .where(ModelVersion.status == "active")
+                    .where(ModelVersion.status == "active", ModelVersion.kind == "heuristic")
                     .order_by(ModelVersion.created_at.desc())
                 )
             )
@@ -222,7 +380,11 @@ async def score(
             .first()
         )
     if model is None:
-        raise NotFound("No model is available. A Model Curator publishes one.")
+        raise NotFound(
+            "No model is available. A Model Curator publishes one and a second person approves it."
+        )
+    if model.kind == "trained":
+        raise ValidationFailed("A trained model scores records, not cohorts. Open it from Models to score.")
     dataset = await analysis.dataset_for(session, actor, model.dataset_id)
     spec = model_spec(model)
     for dim, value in cohort.items():

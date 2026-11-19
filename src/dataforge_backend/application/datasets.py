@@ -33,7 +33,9 @@ from ..infrastructure.db.models import (
     DatasetVersion,
     Insight,
     LineageEdge,
+    ModelVersion,
     RowPolicy,
+    ScoringRun,
     Share,
     User,
 )
@@ -771,7 +773,26 @@ async def erase(session: AsyncSession, actor: Actor, dataset_id: str, reason: st
         .scalars()
         .all()
     )
-    tables = sorted(set(versions_rows) | {f"silver.{dataset.table_name}", f"gold.{dataset.table_name}"})
+    # Scores computed from this dataset go with it, and models trained on it can no longer be used.
+    score_tables = (
+        (await session.execute(select(ScoringRun.scores_table).where(ScoringRun.dataset_id == dataset.id)))
+        .scalars()
+        .all()
+    )
+    for model in (
+        await session.execute(
+            select(ModelVersion).where(
+                ModelVersion.dataset_id == dataset.id, ModelVersion.status.in_(("draft", "active"))
+            )
+        )
+    ).scalars():
+        model.status = "retired"
+        model.decision_note = "Retired: the data it was trained on was erased."
+    tables = sorted(
+        set(versions_rows)
+        | set(score_tables)
+        | {f"silver.{dataset.table_name}", f"gold.{dataset.table_name}"}
+    )
     dropped = []
     for table in tables:
         if await warehouse.table_exists(conn, table):

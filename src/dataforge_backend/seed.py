@@ -15,7 +15,7 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .application import assistant, cleaning, datasets, monitors, predictions, workbench
+from .application import assistant, cleaning, datasets, monitors, outcome_models, predictions, workbench
 from .application.common import Actor
 from .core.config import settings
 from .core.logging import get_logger
@@ -839,7 +839,8 @@ async def seed_demo(session: AsyncSession) -> dict[str, Any]:
 
     await _dashboards(session)
     await _monitors(session)
-    await _model(session, actors["zola"])
+    await _model(session, actors["zola"], actors["naledi"])
+    await _learner_models(session, actors["zola"], actors["naledi"])
     await _notebook(session, actors["sipho"])
     if created:
         for question in (
@@ -1033,7 +1034,7 @@ async def _monitors(session: AsyncSession) -> None:
     await session.commit()
 
 
-async def _model(session: AsyncSession, curator: Actor) -> None:
+async def _model(session: AsyncSession, curator: Actor, steward: Actor) -> None:
     existing = (
         await session.execute(select(Dataset).where(Dataset.id == "course-completions"))
     ).scalar_one_or_none()
@@ -1042,7 +1043,8 @@ async def _model(session: AsyncSession, curator: Actor) -> None:
     models = await predictions.list_models(session, curator)
     if any(m["name"] == "completion-heuristic" for m in models):
         return
-    await predictions.create_version(
+    # Zola builds it; Naledi, a different person, reviews and approves it.
+    created = await predictions.create_version(
         session,
         curator,
         {
@@ -1100,6 +1102,54 @@ async def _model(session: AsyncSession, curator: Actor) -> None:
             ],
         },
     )
+    await predictions.approve(
+        session, steward, created["id"], "Reviewed: every factor, weight and reason is documented."
+    )
+
+
+LEARNER_MODEL = {
+    "datasetId": "learner-progress",
+    "name": "learner-dropout-risk",
+    "version": "1.0",
+    "outcome": {
+        "column": "outcome",
+        "positive": "Dropped out",
+        "unlabelled": ["In progress"],
+        "label": "drops out",
+        "entity": "learner",
+    },
+    "protected": ["gender", "population_group", "disability", "age_band"],
+    # Cohorts that started by April 2025 have all finished, so their outcomes are settled.
+    "trainUntil": "2025-04",
+    "algorithms": ["logistic", "hist_gb"],
+    # An early warning should catch most learners who will drop out: flag enough to find 70% of them.
+    "threshold": {"policy": "recall_at", "target": 0.7},
+    "description": (
+        "Early warning from a learner's first six weeks: who is likely to drop out, so a facilitator can follow up."
+    ),
+}
+
+
+async def _learner_models(session: AsyncSession, curator: Actor, steward: Actor) -> None:
+    """Zola trains the showcase model; Naledi approves the logistic version and runs it over current learners.
+
+    The gradient-boosted version is left as a draft, so a reviewer can be shown deciding on it.
+    """
+    if await session.get(Dataset, "learner-progress") is None:
+        return
+    models = await predictions.list_models(session, curator)
+    if any(m["name"] == LEARNER_MODEL["name"] for m in models):
+        return
+    drafts = await outcome_models.train(session, curator, LEARNER_MODEL)
+    logistic = next(m for m in drafts if m["algorithm"] == "logistic")
+    await predictions.approve(
+        session,
+        steward,
+        logistic["id"],
+        "Reviewed the card: beats the documented heuristic, threshold set for recall, fairness flags "
+        "followed up with facilitators. For prioritising support only.",
+    )
+    await outcome_models.run_scoring(session, steward, logistic["id"])
 
 
 async def _notebook(session: AsyncSession, author: Actor) -> None:
