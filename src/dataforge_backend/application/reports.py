@@ -100,7 +100,7 @@ async def _measure_figure(
                 "value": shown,
                 "display": f"<{reporting.SUPPRESS_BELOW}"
                 if suppressed
-                else ("—" if shown is None else format_value(shown, measure.unit)),
+                else ("â€”" if shown is None else format_value(shown, measure.unit)),
                 "suppressed": suppressed,
             }
         )
@@ -372,6 +372,11 @@ def _safe(value: Any) -> Any:
     return value
 
 
+def _line(pdf: Any, width: float, height: float, text: str) -> None:
+    """One block of text, then back to the left margin for the next."""
+    pdf.multi_cell(width, height, text, new_x="LMARGIN", new_y="NEXT")
+
+
 def _pdf(data: dict[str, Any]) -> bytes:
     from fpdf import FPDF
 
@@ -380,21 +385,22 @@ def _pdf(data: dict[str, Any]) -> bytes:
     pdf.add_page()
     pdf.set_text_color(55, 61, 64)
     pdf.set_font("Helvetica", "B", 18)
-    pdf.multi_cell(0, 9, _latin(data["title"]))
+    _line(pdf, 0, 9, _latin(data["title"]))
     pdf.set_font("Helvetica", "", 10)
     period = data["period"] or {}
-    pdf.multi_cell(
+    _line(
+        pdf,
         0,
         5,
         _latin(f"Period {period.get('from')} to {period.get('to')}. Generated {data['createdAt'][:10]}."),
     )
     if data.get("disclaimer"):
         pdf.set_font("Helvetica", "I", 9)
-        pdf.multi_cell(0, 5, _latin(data["disclaimer"]))
+        _line(pdf, 0, 5, _latin(data["disclaimer"]))
     pdf.ln(3)
     pdf.set_font("Helvetica", "", 11)
     for paragraph in data["narrative"]:
-        pdf.multi_cell(0, 6, _latin(paragraph["text"]))
+        _line(pdf, 0, 6, _latin(paragraph["text"]))
         pdf.ln(1)
     section = None
     for figure in data["figures"]:
@@ -402,13 +408,13 @@ def _pdf(data: dict[str, Any]) -> bytes:
             section = figure["section"]
             pdf.ln(3)
             pdf.set_font("Helvetica", "B", 13)
-            pdf.multi_cell(0, 7, _latin(section))
+            _line(pdf, 0, 7, _latin(section))
         pdf.set_font("Helvetica", "B", 10)
-        pdf.multi_cell(0, 6, _latin(f"{figure['id']}  {figure['label']}"))
+        _line(pdf, 0, 6, _latin(f"{figure['id']}  {figure['label']}"))
         pdf.set_font("Helvetica", "", 10)
         for row in figure["rows"][:20]:
             label = row["group"] or "Total"
-            pdf.multi_cell(0, 5, _latin(f"    {label}: {row['display']}"))
+            _line(pdf, 0, 5, _latin(f"    {label}: {row['display']}"))
     pdf.add_page()
     pdf.set_font("Helvetica", "B", 13)
     pdf.cell(0, 8, "Figure provenance", new_x="LMARGIN", new_y="NEXT")
@@ -418,12 +424,12 @@ def _pdf(data: dict[str, Any]) -> bytes:
         source = (
             f"model {figure['model']['label']}, scoring run {figure['scoringRun']['id']}"
             if figure.get("kind") == "model"
-            else f"{figure.get('datasetName')} · metric {metric.get('name', figure.get('measure'))} "
-            f"v{metric.get('version', '-')} · sandbox session {figure.get('sessionId')}"
+            else f"{figure.get('datasetName')} Â· metric {metric.get('name', figure.get('measure'))} "
+            f"v{metric.get('version', '-')} Â· sandbox session {figure.get('sessionId')}"
         )
-        pdf.multi_cell(0, 4, _latin(f"{figure['id']} {figure['label']}: {source}"))
+        _line(pdf, 0, 4, _latin(f"{figure['id']} {figure['label']}: {source}"))
         if figure.get("sql"):
-            pdf.multi_cell(0, 4, _latin(f"    {figure['sql'][:600]}"))
+            _line(pdf, 0, 4, _latin(f"    {figure['sql'][:600]}"))
         pdf.ln(1)
     return bytes(pdf.output())
 
