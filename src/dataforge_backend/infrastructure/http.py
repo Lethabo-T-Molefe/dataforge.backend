@@ -18,7 +18,7 @@ _DEFAULT_TIMEOUT = httpx.Timeout(20.0, connect=5.0)
 
 def _backoff(attempt: int) -> float:
     """Exponential backoff with jitter, capped so a burst of retries stays under a few seconds."""
-    return min(4.0, (0.25 * (2**attempt)) + random.uniform(0, 0.15))
+    return float(min(4.0, (0.25 * (2**attempt)) + random.uniform(0, 0.15)))
 
 
 async def request(

@@ -21,9 +21,7 @@ async def post_slack(message: str, blocks: list[dict[str, Any]] | None = None) -
     if blocks:
         payload["blocks"] = blocks
     try:
-        response = await outbound.post(
-            settings.SLACK_WEBHOOK_URL, timeout=10, retryable=True, json=payload
-        )
+        response = await outbound.post(settings.SLACK_WEBHOOK_URL, timeout=10, retryable=True, json=payload)
         return response.status_code < 300
     except httpx.HTTPError as error:
         log.warning("slack_post_failed", error=str(error))

@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "final-year/**"]
   pull_request:
 
 concurrency:
@@ -43,16 +43,28 @@ jobs:
       - name: Install
         run: uv sync --frozen
 
+      # Failures are also written as annotations, which show inline on pull requests.
       - name: Ruff
         run: |
-          uv run ruff check .
+          uv run ruff check --output-format=github .
           uv run ruff format --check .
 
       - name: Mypy
-        run: uv run mypy src
+        run: |
+          set +e
+          uv run mypy src > mypy.txt 2>&1
+          status=$?
+          cat mypy.txt
+          uv run python scripts/ci_annotate.py mypy mypy.txt
+          exit $status
 
       - name: Tests
-        run: uv run pytest -q
+        run: |
+          set +e
+          uv run pytest -q --junitxml=report.xml
+          status=$?
+          uv run python scripts/ci_annotate.py junit report.xml
+          exit $status
 
   image:
     name: Docker image builds

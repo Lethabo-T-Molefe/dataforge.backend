@@ -2,9 +2,8 @@
 
 import io
 
-from httpx import AsyncClient
-
 from catalogue_progress import marks
+from httpx import AsyncClient
 
 from .conftest import SignIn
 
@@ -38,7 +37,10 @@ async def test_share_promote_patch_and_assistant(client: AsyncClient, sign_in: S
         json={"emails": ["lerato@dataforge.local"]},
     )
     assert again.status_code == 200
-    assert "lerato@dataforge.local" not in str(again.json().get("added", [])).lower() or again.json().get("added") == []
+    assert (
+        "lerato@dataforge.local" not in str(again.json().get("added", [])).lower()
+        or again.json().get("added") == []
+    )
 
     too_many = await client.post(
         f"/api/v1/datasets/{dataset_id}/shares",
@@ -73,9 +75,7 @@ async def test_share_promote_patch_and_assistant(client: AsyncClient, sign_in: S
         )
     ).status_code == 200
     assert (
-        await client.post(
-            "/api/v1/datasets/regional-revenue/promote", headers=analyst, json={}
-        )
+        await client.post("/api/v1/datasets/regional-revenue/promote", headers=analyst, json={})
     ).status_code == 403
 
     ask = await client.post(
@@ -205,9 +205,7 @@ async def test_metrics_notebooks_dashboards_sql(client: AsyncClient, sign_in: Si
     assert (
         await client.delete(f"/api/v1/notebooks/{nb_id}/cells/missing-cell", headers=curator)
     ).status_code == 404
-    run = await client.post(
-        f"/api/v1/notebooks/{nb_id}/cells/{cells[0]['id']}/run", headers=curator
-    )
+    run = await client.post(f"/api/v1/notebooks/{nb_id}/cells/{cells[0]['id']}/run", headers=curator)
     assert run.status_code == 200
 
     dash = await client.post(
@@ -232,7 +230,11 @@ async def test_metrics_notebooks_dashboards_sql(client: AsyncClient, sign_in: Si
     chart = await client.post(
         f"/api/v1/dashboards/{dash_id}/charts",
         headers=practitioner,
-        json={"title": "One", "type": "bar", "sql": "SELECT region, SUM(revenue) FROM gold.revenue_by_region GROUP BY 1"},
+        json={
+            "title": "One",
+            "type": "bar",
+            "sql": "SELECT region, SUM(revenue) FROM gold.revenue_by_region GROUP BY 1",
+        },
     )
     assert chart.status_code in (201, 422)
     assert (
@@ -243,9 +245,7 @@ async def test_metrics_notebooks_dashboards_sql(client: AsyncClient, sign_in: Si
         await client.post("/api/v1/sql/run", headers=practitioner, json={"sql": "SELECT 1", "maxRows": 0})
     ).status_code == 422
     assert (
-        await client.post(
-            "/api/v1/sql/run", headers=practitioner, json={"sql": "SELECT 1", "maxRows": 50001}
-        )
+        await client.post("/api/v1/sql/run", headers=practitioner, json={"sql": "SELECT 1", "maxRows": 50001})
     ).status_code == 422
 
 
@@ -282,7 +282,11 @@ async def test_connectors_notifications_errors_search(client: AsyncClient, sign_
     test = await client.post(f"/api/v1/connectors/{sid}/test", headers=steward)
     assert test.status_code in (200, 422)
     if test.status_code == 200:
-        assert "spreadsheet" in test.text.lower() or test.json().get("status") == "error" or "upload" in test.text.lower()
+        assert (
+            "spreadsheet" in test.text.lower()
+            or test.json().get("status") == "error"
+            or "upload" in test.text.lower()
+        )
     xls = await client.post(
         f"/api/v1/connectors/{sid}/workbook",
         headers=analyst,

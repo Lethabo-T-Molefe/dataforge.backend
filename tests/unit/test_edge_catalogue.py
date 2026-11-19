@@ -9,13 +9,13 @@ from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 import pytest
+from catalogue_progress import marks
 from pydantic import ValidationError
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 from starlette.routing import Route
 
-from catalogue_progress import marks
 from dataforge_backend.application.common import contains_like, humanize
 from dataforge_backend.application.identity import check_password_strength
 from dataforge_backend.core.config import Settings
@@ -103,7 +103,21 @@ def test_v02_parse_number(raw, expected) -> None:
 
 @marks("V-01")
 def test_v01_sentinels_leave_zero_alone() -> None:
-    for text in ("", "n/a", "NA", "null", "none", "nil", "-", "--", "?", "nan", "#n/a", "missing", "unknown?"):
+    for text in (
+        "",
+        "n/a",
+        "NA",
+        "null",
+        "none",
+        "nil",
+        "-",
+        "--",
+        "?",
+        "nan",
+        "#n/a",
+        "missing",
+        "unknown?",
+    ):
         assert is_sentinel(text)
     assert not is_sentinel(0)
     assert not is_sentinel("9999")
@@ -129,10 +143,29 @@ def test_v05_dates_are_day_first_unless_asked() -> None:
 
 @marks("PI-01", "PI-02", "PI-03", "PI-04")
 def test_pi_name_hints_and_value_share() -> None:
-    hinted = _frame({name: ["x", "y", "z"] for name in (
-        "email", "e_mail", "full_name", "first_name", "surname", "sa_id", "id_number",
-        "passport", "phone", "cell", "mobile", "address", "dob", "date_of_birth", "card_number", "pan",
-    )})
+    hinted = _frame(
+        {
+            name: ["x", "y", "z"]
+            for name in (
+                "email",
+                "e_mail",
+                "full_name",
+                "first_name",
+                "surname",
+                "sa_id",
+                "id_number",
+                "passport",
+                "phone",
+                "cell",
+                "mobile",
+                "address",
+                "dob",
+                "date_of_birth",
+                "card_number",
+                "pan",
+            )
+        }
+    )
     found = {f.column for f in detect_pii(hinted)}
     assert found == set(hinted.columns)
     innocent = _frame({"course_name": ["SQL", "Stats", "Ethics"], "user_name": ["a", "b", "c"]})
@@ -206,7 +239,10 @@ def test_sm_measures_dimensions_and_plurals() -> None:
 @marks("CL-01", "CL-02", "CL-03", "CL-04", "CL-05", "CL-06", "CL-09", "C-15")
 def test_cl_fill_missing() -> None:
     full = _frame({"a": [1, 2, 3]})
-    assert "No column needed filling." in _run("fill_missing", full, {"columns": ["a"], "strategy": "median"}).summary
+    assert (
+        "No column needed filling."
+        in _run("fill_missing", full, {"columns": ["a"], "strategy": "median"}).summary
+    )
     blanks = _frame({"city": ["Cape Town", None, "n/a"]})
     filled = _run("fill_missing", blanks, {"columns": ["city"]})
     assert _col(filled, "city")[1] == "Unknown"
@@ -219,7 +255,9 @@ def test_cl_fill_missing() -> None:
     assert _col(_run("fill_missing", numbers, {"strategy": "mean", "columns": ["n"]}), "n")[1] == 2
     median = _run("fill_missing", _frame({"n": [1, None, 100]}), {"strategy": "median", "columns": ["n"]})
     assert _col(median, "n")[1] == 50.5
-    mode = _run("fill_missing", _frame({"c": ["GP", "GP", None, "WC"]}), {"strategy": "mode", "columns": ["c"]})
+    mode = _run(
+        "fill_missing", _frame({"c": ["GP", "GP", None, "WC"]}), {"strategy": "mode", "columns": ["c"]}
+    )
     assert _col(mode, "c")[2] == "GP"
     tie = pd.Series(["GP", "WC"])
     tied = _run("fill_missing", _frame({"c": ["GP", "WC", None]}), {"strategy": "mode", "columns": ["c"]})
@@ -262,26 +300,46 @@ def test_cl_drop_and_dedupe() -> None:
 
 @marks("CL-26", "CL-27", "CL-29", "CL-32", "C-20", "C-21", "C-22")
 def test_cl_phones_dates_numbers_and_types() -> None:
-    phones = _frame({"p": ["0821234567", "27821234567", "+27821234567", "821234567", "082", "+1 202 555 0143"]})
+    phones = _frame(
+        {"p": ["0821234567", "27821234567", "+27821234567", "821234567", "082", "+1 202 555 0143"]}
+    )
     out = _run("normalize_phones", phones, {"columns": ["p"]})
     assert _col(out, "p")[:4] == ["+27821234567"] * 4
     assert _col(out, "p")[4] is None
     assert _col(out, "p")[5] is None
-    dates = _frame({"d": ["01/02/2026", "2026-02-01", "14 March 2026", "March 14, 2026", "2026-02-30", "not a date", None]})
+    dates = _frame(
+        {
+            "d": [
+                "01/02/2026",
+                "2026-02-01",
+                "14 March 2026",
+                "March 14, 2026",
+                "2026-02-30",
+                "not a date",
+                None,
+            ]
+        }
+    )
     day = _col(_run("parse_dates", dates, {"columns": ["d"], "day_first": True}), "d")
     month = _col(_run("parse_dates", dates, {"columns": ["d"], "day_first": False}), "d")
     assert day[0] == "2026-02-01" and month[0] == "2026-01-02"
     assert day[2] == "2026-03-14" and month[2] is None
     assert day[3] == "2026-03-14" and month[3] == "2026-03-14"
     assert day[4] is None and day[5] is None
-    numbers = _frame({"n": ["R 1 250.00", "1 250,50", "1,250.5", "1.250,5", "(40)", "50%", "True", None, "abc"]})
+    numbers = _frame(
+        {"n": ["R 1 250.00", "1 250,50", "1,250.5", "1.250,5", "(40)", "50%", "True", None, "abc"]}
+    )
     parsed = _col(_run("parse_numbers", numbers, {"columns": ["n"]}), "n")
     assert parsed[:6] == [1250, 1250.5, 1250.5, 1250.5, -40, 50]
     assert parsed[6] is None and parsed[7] is None and parsed[8] is None
-    kinds = _run("coerce_types", _frame({"flag": ["yes", "2"], "whole": ["1.0", "1.5"], "s": ["n/a", "keep"]}), {
-        "types": {"flag": "boolean", "whole": "integer", "s": "string"},
-        "clean_text_sentinels": False,
-    })
+    kinds = _run(
+        "coerce_types",
+        _frame({"flag": ["yes", "2"], "whole": ["1.0", "1.5"], "s": ["n/a", "keep"]}),
+        {
+            "types": {"flag": "boolean", "whole": "integer", "s": "string"},
+            "clean_text_sentinels": False,
+        },
+    )
     assert _col(kinds, "flag") == [True, None]
     assert _col(kinds, "whole") == [1, None]
     assert _col(kinds, "s")[0] == "n/a"
@@ -308,10 +366,16 @@ def test_cl_rename_keeps_personal_columns_masked() -> None:
 @marks("CL-36", "CL-40", "CL-41", "CL-48", "C-25")
 def test_cl_rules_and_k() -> None:
     frame = _frame({"n": [1, 9, None], "city": ["GP", "gp", ""]})
-    flagged = _run("validate_rules", frame, {"rules": [
-        {"column": "n", "rule": "range", "min": 0, "max": 5},
-        {"column": "city", "rule": "allowed", "values": ["gp"]},
-    ]})
+    flagged = _run(
+        "validate_rules",
+        frame,
+        {
+            "rules": [
+                {"column": "n", "rule": "range", "min": 0, "max": 5},
+                {"column": "city", "rule": "allowed", "values": ["gp"]},
+            ]
+        },
+    )
     assert _col(flagged, "row_failed_rules")[1] is True
     with pytest.raises(OperationError, match="unknown column"):
         _run("validate_rules", frame, {"rules": [{"column": "nope", "rule": "not_null"}]})
@@ -328,16 +392,43 @@ def test_cl_rules_and_k() -> None:
 
 
 @marks(
-    "CL-08", "CL-14", "CL-15", "CL-16", "CL-17", "CL-18", "CL-19", "CL-20", "CL-21", "CL-22",
-    "CL-23", "CL-24", "CL-25", "CL-28", "CL-30", "CL-31", "CL-33", "CL-34", "CL-35", "CL-39",
-    "CL-42", "CL-43", "CL-44", "CL-45", "CL-46",
-    "C-17", "C-18", "C-19", "C-26", "C-27",
+    "CL-08",
+    "CL-14",
+    "CL-15",
+    "CL-16",
+    "CL-17",
+    "CL-18",
+    "CL-19",
+    "CL-20",
+    "CL-21",
+    "CL-22",
+    "CL-23",
+    "CL-24",
+    "CL-25",
+    "CL-28",
+    "CL-30",
+    "CL-31",
+    "CL-33",
+    "CL-34",
+    "CL-35",
+    "CL-39",
+    "CL-42",
+    "CL-43",
+    "CL-44",
+    "CL-45",
+    "CL-46",
+    "C-17",
+    "C-18",
+    "C-19",
+    "C-26",
+    "C-27",
 )
 def test_cl_remaining_fixtures() -> None:
     frame = _frame({"month": ["2026-01", "2026-03", "2026-02"], "amount": [10, None, 30]})
     assert _col(_run("fill_missing", frame, {"columns": ["amount"], "strategy": "ffill"}), "amount")[1] == 10
     ordered = _col(
-        _run("fill_missing", frame, {"columns": ["amount"], "strategy": "ffill", "order_by": "month"}), "amount"
+        _run("fill_missing", frame, {"columns": ["amount"], "strategy": "ffill", "order_by": "month"}),
+        "amount",
     )
     assert ordered[1] == 30
     same = _frame({"city": ["GP", " GP"], "note": ["", "n/a"]})
@@ -356,7 +447,10 @@ def test_cl_remaining_fixtures() -> None:
     short = _frame({"n": [1, 2, 3, 100]})
     assert len(_run("handle_outliers", short, {"columns": ["n"], "action": "drop"}).frame) == 4
     flat = _frame({"n": [5, 5, 5, 5, 5]})
-    assert len(_run("handle_outliers", flat, {"columns": ["n"], "method": "zscore", "action": "drop"}).frame) == 5
+    assert (
+        len(_run("handle_outliers", flat, {"columns": ["n"], "method": "zscore", "action": "drop"}).frame)
+        == 5
+    )
     mad_half = _frame({"n": [1, 1, 1, 1, 1, 100]})
     mad = _run("handle_outliers", mad_half, {"columns": ["n"], "method": "mad", "action": "flag"})
     assert "n_outlier" in mad.frame.columns and int(mad.frame["n_outlier"].sum()) >= 1
@@ -450,7 +544,12 @@ def test_cl_remaining_fixtures() -> None:
     )
     assert _col(ids, "sa_id_valid") == [True, False, None]
     ctx = CleaningContext(references={"provinces": {"GP"}})
-    orphans = _run("flag_orphans", _frame({"city": ["GP", "gp", None]}), {"column": "city", "reference": "provinces"}, ctx)
+    orphans = _run(
+        "flag_orphans",
+        _frame({"city": ["GP", "gp", None]}),
+        {"column": "city", "reference": "provinces"},
+        ctx,
+    )
     assert _col(orphans, "city_orphan") == [False, True, False]
     repair = _frame({"code": ["A", "A", "A", "A", "A", "B"], "city": ["GP", "GP", "GP", "GP", "WC", "WC"]})
     fixed = _run("repair_constraints", repair, {"determinant": "code", "dependent": "city"})
@@ -527,13 +626,9 @@ def test_mo_rules() -> None:
     assert exact.triggered is False
     over = evaluate([("2026-01", 10), ("2026-02", 21)], MonitorRule("change", 100), "count")
     assert over.triggered is True
-    above = evaluate(
-        [("2026-01", 10), ("2026-02", 10), ("2026-03", 21)], MonitorRule("above", 20), "count"
-    )
+    above = evaluate([("2026-01", 10), ("2026-02", 10), ("2026-03", 21)], MonitorRule("above", 20), "count")
     assert above.triggered is True and "first time" in above.message
-    stayed = evaluate(
-        [("2026-01", 10), ("2026-02", 21), ("2026-03", 22)], MonitorRule("above", 20), "count"
-    )
+    stayed = evaluate([("2026-01", 10), ("2026-02", 21), ("2026-03", 22)], MonitorRule("above", 20), "count")
     assert stayed.triggered is False
     flat = evaluate(
         [("2026-01", 5), ("2026-02", 5), ("2026-03", 5), ("2026-04", 9)],
@@ -559,16 +654,30 @@ def test_mo_rules() -> None:
 
 @marks("PR-02", "PR-07", "PR-08", "PR-09")
 def test_pr_weights_and_bands() -> None:
-    spec = ModelSpec("Risk", "1", "leave", "d", (
-        FactorSpec("a", "A", 0.5, "up", "fee"),
-        FactorSpec("b", "B", 0.5, "down", "fee"),
-    ))
+    spec = ModelSpec(
+        "Risk",
+        "1",
+        "leave",
+        "d",
+        (
+            FactorSpec("a", "A", 0.5, "up", "fee"),
+            FactorSpec("b", "B", 0.5, "down", "fee"),
+        ),
+    )
     validate_model(spec, {"fee"})
     with pytest.raises(ModelError):
-        validate_model(ModelSpec("Risk", "1", "leave", "d", (
-            FactorSpec("a", "A", 0.999, "up", "fee"),
-            FactorSpec("b", "B", 0.001, "up", "fee", window="nope"),
-        )))
+        validate_model(
+            ModelSpec(
+                "Risk",
+                "1",
+                "leave",
+                "d",
+                (
+                    FactorSpec("a", "A", 0.999, "up", "fee"),
+                    FactorSpec("b", "B", 0.001, "up", "fee", window="nope"),
+                ),
+            )
+        )
     with pytest.raises(ModelError, match="0.9990"):
         validate_model(ModelSpec("Risk", "1", "leave", "d", (FactorSpec("a", "A", 0.999, "up", "fee"),)))
     neutral = factor_score(FactorInput(float("nan"), 1, 1, 4, "count"), "up")
@@ -691,8 +800,13 @@ def test_passwords_and_totp_window() -> None:
 @marks("U-03", "B-01", "K-01", "D-01", "M-01")
 def test_roles_match_the_catalogue() -> None:
     everyday = {
-        Permission.UPLOAD, Permission.CLEAN, Permission.ANALYSE, Permission.RUN_SQL,
-        Permission.REQUEST_CONNECTORS, Permission.MANAGE_DASHBOARDS, Permission.MANAGE_MONITORS,
+        Permission.UPLOAD,
+        Permission.CLEAN,
+        Permission.ANALYSE,
+        Permission.RUN_SQL,
+        Permission.REQUEST_CONNECTORS,
+        Permission.MANAGE_DASHBOARDS,
+        Permission.MANAGE_MONITORS,
         Permission.PREDICT,
     }
     assert ROLE_PERMISSIONS[Role.ANALYST] == frozenset(everyday)
@@ -750,7 +864,10 @@ def test_p06_body_cap_skips_gets_and_multipart() -> None:
     )
     assert over is not None and over.status_code == 413
     exact = _reject_oversized_body(
-        _request("POST", [(b"content-length", str(2 * 1024 * 1024).encode()), (b"content-type", b"application/json")])
+        _request(
+            "POST",
+            [(b"content-length", str(2 * 1024 * 1024).encode()), (b"content-type", b"application/json")],
+        )
     )
     assert exact is None
 

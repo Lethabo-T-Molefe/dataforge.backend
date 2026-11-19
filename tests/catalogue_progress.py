@@ -66,6 +66,10 @@ def write_checklist(*, reset: bool = False) -> None:
     known = set() if reset else _load()
     known |= COVERED
     _save(known)
+    if not EDGE.exists():
+        # The edge-case catalogue lives beside the repositories and is not always checked out
+        # (CI, fresh clones). Coverage ids are still saved; only the checklist is skipped.
+        return
 
     sections: list[tuple[str, list[tuple[str, str]]]] = []
     current = "Catalogue"

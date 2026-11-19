@@ -4,8 +4,8 @@ from fastapi import APIRouter, Depends, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ....application import identity, slack
-from ....application.common import Actor
 from ....application import rate_limit as durable_limits
+from ....application.common import Actor
 from ....core.config import settings
 from ....core.errors import NotFound, Unauthorized
 from ....infrastructure.db.models import User

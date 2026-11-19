@@ -2,9 +2,8 @@
 
 import io
 
-from httpx import AsyncClient
-
 from catalogue_progress import marks
+from httpx import AsyncClient
 
 from .conftest import SignIn
 

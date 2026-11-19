@@ -2,9 +2,9 @@
 
 import io
 
+from catalogue_progress import marks
 from httpx import AsyncClient
 
-from catalogue_progress import marks
 from dataforge_backend.core.config import settings
 
 from .conftest import SignIn
@@ -127,9 +127,7 @@ async def test_cleaning_and_governance_edges(client: AsyncClient, sign_in: SignI
     auditor = await sign_in("auditor")
     assert (await client.get(f"/api/v1/datasets/{dataset_id}", headers=auditor)).status_code == 200
     assert (
-        await client.post(
-            f"/api/v1/datasets/{dataset_id}/approve", headers=auditor, json={"reason": "no"}
-        )
+        await client.post(f"/api/v1/datasets/{dataset_id}/approve", headers=auditor, json={"reason": "no"})
     ).status_code == 403
 
     patch = await client.patch(
@@ -196,8 +194,20 @@ async def test_cleaning_and_governance_edges(client: AsyncClient, sign_in: SignI
 
 
 @marks(
-    "B-01", "B-03", "B-04", "B-05", "M-01", "M-02", "D-01", "D-02",
-    "K-02", "K-03", "SE-02", "AU-03", "AU-04", "Z-06",
+    "B-01",
+    "B-03",
+    "B-04",
+    "B-05",
+    "M-01",
+    "M-02",
+    "D-01",
+    "D-02",
+    "K-02",
+    "K-03",
+    "SE-02",
+    "AU-03",
+    "AU-04",
+    "Z-06",
 )
 async def test_notebooks_metrics_dashboards_connectors_search_audit(
     client: AsyncClient, sign_in: SignIn
@@ -206,18 +216,12 @@ async def test_notebooks_metrics_dashboards_connectors_search_audit(
     practitioner = await sign_in("practitioner")
     executive = await sign_in("executive")
 
-    assert (
-        await client.post("/api/v1/notebooks", headers=analyst, json={"name": "Nope"})
-    ).status_code == 403
-    notebook = await client.post(
-        "/api/v1/notebooks", headers=practitioner, json={"name": "Scratch"}
-    )
+    assert (await client.post("/api/v1/notebooks", headers=analyst, json={"name": "Nope"})).status_code == 403
+    notebook = await client.post("/api/v1/notebooks", headers=practitioner, json={"name": "Scratch"})
     assert notebook.status_code == 201, notebook.text
     nb_id = notebook.json()["id"]
     assert (
-        await client.patch(
-            f"/api/v1/notebooks/{nb_id}", headers=practitioner, json={"visibility": "public"}
-        )
+        await client.patch(f"/api/v1/notebooks/{nb_id}", headers=practitioner, json={"visibility": "public"})
     ).status_code == 422
     assert (
         await client.post(
@@ -269,9 +273,7 @@ async def test_notebooks_metrics_dashboards_connectors_search_audit(
         )
     ).status_code == 403
     assert (
-        await client.post(
-            "/api/v1/dashboards", headers=analyst, json={"name": "", "visibility": "private"}
-        )
+        await client.post("/api/v1/dashboards", headers=analyst, json={"name": "", "visibility": "private"})
     ).status_code == 422
     assert (
         await client.post(

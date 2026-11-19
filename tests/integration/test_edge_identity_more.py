@@ -4,10 +4,10 @@ import re
 from datetime import UTC, datetime, timedelta
 
 import pyotp
+from catalogue_progress import marks
 from httpx import AsyncClient
 from sqlalchemy import text
 
-from catalogue_progress import marks
 from dataforge_backend.core.database import SessionLocal
 from dataforge_backend.infrastructure import email
 
@@ -36,12 +36,12 @@ async def test_verify_reset_password_and_body_refresh(client: AsyncClient) -> No
     assert (await client.post("/api/v1/auth/verify-email", json={"token": verify})).status_code == 200
 
     email.sent.clear()
-    assert (await client.post("/api/v1/auth/forgot-password", json={"email": "reset-me@example.com"})).status_code == 202
+    assert (
+        await client.post("/api/v1/auth/forgot-password", json={"email": "reset-me@example.com"})
+    ).status_code == 202
     reset = re.search(r"token=([\w-]+)", email.sent[-1].get_content())
     assert reset is not None
-    assert (
-        await client.post("/api/v1/auth/verify-email", json={"token": reset.group(1)})
-    ).status_code == 422
+    assert (await client.post("/api/v1/auth/verify-email", json={"token": reset.group(1)})).status_code == 422
     assert (
         await client.post(
             "/api/v1/auth/reset-password",
@@ -113,17 +113,15 @@ async def test_verify_reset_password_and_body_refresh(client: AsyncClient) -> No
 
 
 @marks("I-20", "I-30", "I-31", "I-32", "I-33", "I-39", "I-49", "I-55", "I-56")
-async def test_lock_expiry_mfa_tokens_demo_and_expired_refresh(
-    client: AsyncClient, sign_in: SignIn
-) -> None:
+async def test_lock_expiry_mfa_tokens_demo_and_expired_refresh(client: AsyncClient, sign_in: SignIn) -> None:
     await _register(client, "unlock@example.com")
     for _ in range(5):
-        await client.post("/api/v1/auth/login", json={"email": "unlock@example.com", "password": "Wrong-Password-1"})
+        await client.post(
+            "/api/v1/auth/login", json={"email": "unlock@example.com", "password": "Wrong-Password-1"}
+        )
     async with SessionLocal() as session:
         await session.execute(
-            text(
-                "UPDATE app.users SET locked_until = :past WHERE email = 'unlock@example.com'"
-            ),
+            text("UPDATE app.users SET locked_until = :past WHERE email = 'unlock@example.com'"),
             {"past": datetime.now(UTC) - timedelta(minutes=1)},
         )
         await session.commit()
@@ -197,7 +195,9 @@ async def test_lock_expiry_mfa_tokens_demo_and_expired_refresh(
     access = login.json()["accessToken"]
     async with SessionLocal() as session:
         await session.execute(
-            text("UPDATE app.users SET session_version = session_version + 1 WHERE email = 'unlock@example.com'")
+            text(
+                "UPDATE app.users SET session_version = session_version + 1 WHERE email = 'unlock@example.com'"
+            )
         )
         await session.commit()
     assert (
@@ -223,7 +223,10 @@ async def test_lock_expiry_mfa_tokens_demo_and_expired_refresh(
     client.cookies.clear()
     expired = await client.post("/api/v1/auth/refresh", json={"refreshToken": refresh})
     assert expired.status_code == 401
-    assert "expired" in expired.json()["error"]["message"].lower() or "sign in" in expired.json()["error"]["message"].lower()
+    assert (
+        "expired" in expired.json()["error"]["message"].lower()
+        or "sign in" in expired.json()["error"]["message"].lower()
+    )
 
     nope = await client.post("/api/v1/auth/demo", json={"role": "nope"})
     assert nope.status_code == 422
@@ -265,11 +268,11 @@ async def test_invite_team_policy_delete_and_health(client: AsyncClient, sign_in
         f"/api/v1/members/{target['id']}", headers=admin, json={"status": "banished"}
     )
     assert bad_status.status_code == 422
-    team = await client.patch(
-        f"/api/v1/members/{target['id']}", headers=admin, json={"team": "   "}
-    )
+    team = await client.patch(f"/api/v1/members/{target['id']}", headers=admin, json={"team": "   "})
     assert team.status_code == 200
-    assert next(m for m in (await client.get("/api/v1/members", headers=admin)).json() if m["id"] == target["id"])["team"] in (None, "")
+    assert next(
+        m for m in (await client.get("/api/v1/members", headers=admin)).json() if m["id"] == target["id"]
+    )["team"] in (None, "")
 
     missing = await client.delete("/api/v1/policies/00000000-0000-0000-0000-000000000000", headers=admin)
     assert missing.status_code == 404

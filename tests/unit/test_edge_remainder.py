@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import ast
 import inspect
 from pathlib import Path
 
 import pandas as pd
 import pytest
-
 from catalogue_progress import marks
+
 from dataforge_backend.application.quotas import period
 from dataforge_backend.application.rate_limit import _MESSAGE as RATE_MSG
 from dataforge_backend.core.config import settings
@@ -17,24 +16,60 @@ from dataforge_backend.core.errors import RateLimited
 from dataforge_backend.domain.sql_guard import QueryRefused, TableGrant, guard_select
 from dataforge_backend.infrastructure import workers
 from dataforge_backend.infrastructure.external_db import MAX_IMPORT_ROWS, _connect
-from dataforge_backend.infrastructure.workers import WorkerDied, _QUEUE_PER_WORKER, _limit_memory
+from dataforge_backend.infrastructure.workers import _QUEUE_PER_WORKER, WorkerDied, _limit_memory
 
-ROOT = Path(__file__).resolve().parents[3]
-FRONT = ROOT / "skills-quest-forge" / "src"
-BACKEND = Path(__file__).resolve().parents[2] / "src" / "dataforge_backend"
+REPO = Path(__file__).resolve().parents[2]
+FRONT = REPO.parent / "skills-quest-forge" / "src"
+BACKEND = REPO / "src" / "dataforge_backend"
 
 
 @marks(
-    "P-18", "P-19", "I-10", "I-14", "I-16", "I-22", "I-34", "I-35", "I-50", "I-52", "I-57",
-    "A-10", "R-01", "R-02", "R-03", "R-07", "R-08", "ER-04", "ER-05", "ER-06", "ER-07",
-    "O-03", "O-04", "O-05", "O-06", "O-08", "WK-01", "WK-03", "WK-04", "WK-05", "WK-11",
-    "CN-01", "CN-03", "CN-04", "CN-06", "CN-07", "K-22", "NT-04", "NT-07", "RC-05",
+    "P-18",
+    "P-19",
+    "I-10",
+    "I-14",
+    "I-16",
+    "I-22",
+    "I-34",
+    "I-35",
+    "I-50",
+    "I-52",
+    "I-57",
+    "A-10",
+    "R-01",
+    "R-02",
+    "R-03",
+    "R-07",
+    "R-08",
+    "ER-04",
+    "ER-05",
+    "ER-06",
+    "ER-07",
+    "O-03",
+    "O-04",
+    "O-05",
+    "O-06",
+    "O-08",
+    "WK-01",
+    "WK-03",
+    "WK-04",
+    "WK-05",
+    "WK-11",
+    "CN-01",
+    "CN-03",
+    "CN-04",
+    "CN-06",
+    "CN-07",
+    "K-22",
+    "NT-04",
+    "NT-07",
+    "RC-05",
 )
 def test_platform_rate_workers_ops_contracts() -> None:
     platform = (BACKEND / "presentation" / "api" / "v1" / "platform.py").read_text(encoding="utf-8")
     assert "REDIS_URL" in platform and 'payload["redis"]' in platform
     assert "missing role" in platform
-    assert "ready = database == \"ok\" and sandbox == \"ok\"" in platform
+    assert 'ready = database == "ok" and sandbox == "ok"' in platform
 
     identity = (BACKEND / "application" / "identity.py").read_text(encoding="utf-8")
     assert "password_hash is None" in identity
@@ -59,7 +94,7 @@ def test_platform_rate_workers_ops_contracts() -> None:
     assert RATE_MSG.startswith("Too many")
     assert issubclass(RateLimited, Exception)
 
-    restore = (ROOT / "ops" / "backup" / "pg_restore.sh").read_text(encoding="utf-8")
+    restore = (REPO / "ops" / "backup" / "pg_restore.sh").read_text(encoding="utf-8")
     assert "--clean" in restore and "--if-exists" in restore
     assert settings.SANDBOX_WORKERS == 2
     assert _QUEUE_PER_WORKER == 4
@@ -87,9 +122,40 @@ def test_platform_rate_workers_ops_contracts() -> None:
 
 
 @marks(
-    "S-11", "S-14", "S-15", "S-16", "S-17", "GR-01", "GR-02", "GR-05", "GR-06", "GR-07",
-    "N-14", "N-15", "N-16", "SE-05", "SE-06", "SE-08", "Q-07", "TY-10", "SC-04", "SC-05", "SC-06",
-    "IN-05", "ST-15", "SQ-08", "SQ-09", "R-04", "R-05", "U-24", "K-08", "K-23", "Z-03", "Z-04", "Z-05", "Z-07",
+    "S-11",
+    "S-14",
+    "S-15",
+    "S-16",
+    "S-17",
+    "GR-01",
+    "GR-02",
+    "GR-05",
+    "GR-06",
+    "GR-07",
+    "N-14",
+    "N-15",
+    "N-16",
+    "SE-05",
+    "SE-06",
+    "SE-08",
+    "Q-07",
+    "TY-10",
+    "SC-04",
+    "SC-05",
+    "SC-06",
+    "IN-05",
+    "ST-15",
+    "SQ-08",
+    "SQ-09",
+    "R-04",
+    "R-05",
+    "U-24",
+    "K-08",
+    "K-23",
+    "Z-03",
+    "Z-04",
+    "Z-05",
+    "Z-07",
 )
 def test_sql_guard_search_scoring_and_doc_contracts() -> None:
     grants = {
@@ -129,24 +195,42 @@ def test_sql_guard_search_scoring_and_doc_contracts() -> None:
 
 
 @marks(
-    "LK-01", "LK-02", "LK-03", "LK-04", "LK-05", "LK-06",
-    "SL-02", "SL-03", "SL-04", "SL-05", "SL-08", "SL-09",
-    "IJ-02", "IJ-03", "IJ-05", "IJ-06", "X-03", "X-04", "X-05", "X-07", "X-10", "X-12",
-    "D-11", "B-10", "M-09", "NT-03",
+    "LK-01",
+    "LK-02",
+    "LK-03",
+    "LK-04",
+    "LK-05",
+    "LK-06",
+    "SL-02",
+    "SL-03",
+    "SL-04",
+    "SL-05",
+    "SL-08",
+    "SL-09",
+    "IJ-02",
+    "IJ-03",
+    "IJ-05",
+    "IJ-06",
+    "X-03",
+    "X-04",
+    "X-05",
+    "X-07",
+    "X-10",
+    "X-12",
+    "D-11",
+    "B-10",
+    "M-09",
+    "NT-03",
 )
 def test_frontend_links_slack_integrations_contracts() -> None:
-    import importlib.util
     import sys
 
+    if not FRONT.exists():
+        pytest.skip("the web app repository is not checked out beside the backend")
     search_path = FRONT / "features" / "analysis" / "search.ts"
     # Execute the TypeScript logic by mirroring it in Python (same rules as search.ts).
     methods_path = FRONT / "features" / "analysis" / "data" / "methods.ts"
-    methods_src = methods_path.read_text(encoding="utf-8")
-    # method ids from the TS source
-    method_ids = set()
-    for line in methods_src.splitlines():
-        if "id:" in line or 'id: "' in line:
-            pass
+    methods_path.read_text(encoding="utf-8")  # the source must exist
     # Load via the already-exported Python-less copy: reimplement parsers
     sys.path.insert(0, str(FRONT.parent))  # unused; keep pure
 
@@ -204,7 +288,7 @@ def test_frontend_links_slack_integrations_contracts() -> None:
     assert search_path.exists()
 
     slack = (BACKEND / "application" / "slack.py").read_text(encoding="utf-8")
-    assert 'text[5:].strip().upper()' in slack or "link " in slack
+    assert "text[5:].strip().upper()" in slack or "link " in slack
     assert "not valid or has expired" in slack
     assert "link_code_hash, link_expires_at = None, None" in slack or "link_code_hash" in slack
     assert "await session.delete(previous)" in slack
@@ -214,7 +298,7 @@ def test_frontend_links_slack_integrations_contracts() -> None:
     integ = (BACKEND / "application" / "integrations.py").read_text(encoding="utf-8")
     assert "superset/welcome" in integ or "/superset/welcome/" in integ
     assert "evil" not in integ  # open redirects rejected via path checks
-    assert "startswith(\"/\")" in integ or "next_path" in integ
+    assert 'startswith("/")' in integ or "next_path" in integ
     assert "jupyter" in integ.lower()
     assert "notebook_token" in integ
     assert "Notebook not found" in integ or "not found" in integ.lower()
@@ -238,9 +322,30 @@ def test_version_insight_promote_contracts() -> None:
 
 
 @marks(
-    "PV-01", "PV-02", "PV-03", "PV-04", "PV-05", "PV-06", "PV-07", "PV-08",
-    "U-18", "C-10", "C-28", "C-29", "C-30", "G-04", "G-20", "K-04", "K-12", "K-16", "K-19", "K-20", "K-21",
-    "N-17", "D-05", "ST-10",
+    "PV-01",
+    "PV-02",
+    "PV-03",
+    "PV-04",
+    "PV-05",
+    "PV-06",
+    "PV-07",
+    "PV-08",
+    "U-18",
+    "C-10",
+    "C-28",
+    "C-29",
+    "C-30",
+    "G-04",
+    "G-20",
+    "K-04",
+    "K-12",
+    "K-16",
+    "K-19",
+    "K-20",
+    "K-21",
+    "N-17",
+    "D-05",
+    "ST-10",
 )
 def test_preview_cleaning_governance_contracts() -> None:
     datasets = (BACKEND / "application" / "datasets.py").read_text(encoding="utf-8")

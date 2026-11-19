@@ -2,9 +2,8 @@
 
 import io
 
-from httpx import AsyncClient
-
 from catalogue_progress import marks
+from httpx import AsyncClient
 
 from .conftest import SignIn
 
@@ -39,9 +38,7 @@ async def test_health_preview_sql_explorations(client: AsyncClient, sign_in: Sig
     missing_layer = await client.get(f"/api/v1/datasets/{did}/rows?layer=GOLD", headers=analyst)
     assert missing_layer.status_code == 404
 
-    bad_sql = await client.post(
-        "/api/v1/sql/run", headers=analyst, json={"sql": "SELEC TYPO FROM nowhere"}
-    )
+    bad_sql = await client.post("/api/v1/sql/run", headers=analyst, json={"sql": "SELEC TYPO FROM nowhere"})
     assert bad_sql.status_code in (200, 422)
     if bad_sql.status_code == 200:
         assert bad_sql.json().get("refused") is True
@@ -79,13 +76,16 @@ async def test_health_preview_sql_explorations(client: AsyncClient, sign_in: Sig
     if pending.status_code == 200:
         assert pending.json().get("refused") is True
 
-    assert (
-        await client.post("/api/v1/integrations/jupyter/sign-in", headers=analyst)
-    ).status_code in (200, 403, 503)
+    assert (await client.post("/api/v1/integrations/jupyter/sign-in", headers=analyst)).status_code in (
+        200,
+        403,
+        503,
+    )
     auditor = await sign_in("auditor")
-    assert (
-        await client.post("/api/v1/integrations/jupyter/sign-in", headers=auditor)
-    ).status_code in (403, 503)
+    assert (await client.post("/api/v1/integrations/jupyter/sign-in", headers=auditor)).status_code in (
+        403,
+        503,
+    )
 
 
 @marks("U-23", "K-04", "K-08", "K-12", "S-11", "D-05", "X-07", "X-10", "SL-03", "R-03", "ER-04")
@@ -148,7 +148,10 @@ async def test_quota_connectors_slack_contact(client: AsyncClient, sign_in: Sign
     assert contact.status_code in (200, 202, 429)
 
     # durable limits still apply in test (wrong password still increments)
-    await client.post("/api/v1/auth/register", json={"name": "R", "email": "rlim@example.com", "password": "Str0ng-Passphrase!"})
+    await client.post(
+        "/api/v1/auth/register",
+        json={"name": "R", "email": "rlim@example.com", "password": "Str0ng-Passphrase!"},
+    )
     for _ in range(3):
         await client.post(
             "/api/v1/auth/login", json={"email": "rlim@example.com", "password": "Wrong-Password-1"}

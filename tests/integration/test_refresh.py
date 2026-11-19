@@ -6,10 +6,10 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
+from catalogue_progress import marks
 from httpx import AsyncClient
 from sqlalchemy import text
 
-from catalogue_progress import marks
 from dataforge_backend.core.database import engine
 
 from .conftest import SignIn

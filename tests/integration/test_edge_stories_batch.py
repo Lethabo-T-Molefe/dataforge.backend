@@ -2,9 +2,8 @@
 
 import io
 
-from httpx import AsyncClient
-
 from catalogue_progress import marks
+from httpx import AsyncClient
 
 from .conftest import SignIn
 
@@ -57,11 +56,7 @@ async def test_version_promote_and_empty_recipe(client: AsyncClient, sign_in: Si
     )
     assert upload.status_code == 201, upload.text
     dataset_id = upload.json()["id"]
-    open_before = {
-        i["id"]
-        for i in upload.json().get("insights", [])
-        if i.get("status") == "open"
-    }
+    open_before = {i["id"] for i in upload.json().get("insights", []) if i.get("status") == "open"}
     studio = (await client.get(f"/api/v1/cleaning/{dataset_id}/studio", headers=analyst)).json()
     method = next(m for m in studio["methods"] if m["applicable"])
     assert (
@@ -75,9 +70,7 @@ async def test_version_promote_and_empty_recipe(client: AsyncClient, sign_in: Si
     recipes = (await client.get(f"/api/v1/cleaning/{dataset_id}/recipes", headers=analyst)).json()
     applied_v1 = next(r for r in recipes if r["status"] == "applied")
     assert (
-        await client.post(
-            f"/api/v1/datasets/{dataset_id}/approve", headers=steward, json={"reason": "ok"}
-        )
+        await client.post(f"/api/v1/datasets/{dataset_id}/approve", headers=steward, json={"reason": "ok"})
     ).status_code == 200
 
     v2 = await client.post(
@@ -89,7 +82,9 @@ async def test_version_promote_and_empty_recipe(client: AsyncClient, sign_in: Si
     body = v2.json()
     assert body["layer"] == "bronze" and body["status"] == "pending" and body["version"] == 2
     # IN-09: open insights are replaced on re-upload; dismissed ones would survive
-    assert all(i["id"] not in open_before or i.get("status") == "open" for i in body.get("insights", [])) or True
+    assert (
+        all(i["id"] not in open_before or i.get("status") == "open" for i in body.get("insights", [])) or True
+    )
 
     studio2 = (await client.get(f"/api/v1/cleaning/{dataset_id}/studio", headers=analyst)).json()
     method2 = next(m for m in studio2["methods"] if m["applicable"])
@@ -103,9 +98,7 @@ async def test_version_promote_and_empty_recipe(client: AsyncClient, sign_in: Si
     applied = [r for r in recipes2 if r["status"] == "applied"]
     assert len(applied) >= 1 and applied[0]["id"] != applied_v1["id"]  # Z-02: version chain, one applied tip
     assert (
-        await client.post(
-            f"/api/v1/datasets/{dataset_id}/approve", headers=steward, json={"reason": "v2"}
-        )
+        await client.post(f"/api/v1/datasets/{dataset_id}/approve", headers=steward, json={"reason": "v2"})
     ).status_code == 200
     gold = await client.post(
         f"/api/v1/datasets/{dataset_id}/promote", headers=steward, json={"columns": ["a"]}
@@ -160,12 +153,11 @@ async def test_search_integrations_and_chart_guard(client: AsyncClient, sign_in:
     hits_auditor = (await client.get("/api/v1/search?q=SecretMetricZebra", headers=auditor)).json()
     assert not any("SecretMetric" in str(h) for h in hits_auditor)
 
-    assert (
-        await client.post("/api/v1/integrations/superset/sync", headers=analyst)
-    ).status_code == 403
-    assert (
-        await client.post("/api/v1/integrations/superset/sign-in", headers=auditor)
-    ).status_code in (403, 503)
+    assert (await client.post("/api/v1/integrations/superset/sync", headers=analyst)).status_code == 403
+    assert (await client.post("/api/v1/integrations/superset/sign-in", headers=auditor)).status_code in (
+        403,
+        503,
+    )
 
     executive = await sign_in("executive")
     dash = await client.post(

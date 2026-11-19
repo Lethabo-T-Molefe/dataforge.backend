@@ -2,18 +2,19 @@
 
 import asyncio
 import io
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
+from catalogue_progress import marks
 from openpyxl import Workbook
 
-from catalogue_progress import marks
 from dataforge_backend.application.audit import _cell, _when, record
 from dataforge_backend.application.inbox import notify
 from dataforge_backend.core.config import settings
 from dataforge_backend.domain.analysis import config_from_dict, interpret
 from dataforge_backend.domain.cleaning.catalogue import (
+    METHODS_BY_ID,
     _categories,
     _d_drop_rows,
     _d_fill_unknown,
@@ -21,7 +22,6 @@ from dataforge_backend.domain.cleaning.catalogue import (
     _d_group_median,
     _d_map,
     is_applicable,
-    METHODS_BY_ID,
 )
 from dataforge_backend.domain.semantic import ColumnInfo, build_analysis_dataset, derive_fields
 from dataforge_backend.infrastructure import jupyter, superset
@@ -33,7 +33,7 @@ def test_audit_notify_monitor_integrations(monkeypatch: pytest.MonkeyPatch) -> N
     assert _cell("=1+1") == "'=1+1"
     assert _cell("+cmd") == "'+cmd"
     assert _cell("ok") == "ok"
-    now = datetime(2026, 3, 14, 15, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 3, 14, 15, 30, tzinfo=UTC)
     assert _when(now, now) == now.astimezone().strftime("%H:%M")
     assert _when(now - timedelta(days=1), now) == "Yesterday"
 
@@ -185,7 +185,9 @@ def test_cd_defaults_excel_short_trends_slack_copy() -> None:
     key = next(k for k in mom_out["visual"]["points"][0] if k != "name")
     assert mom_out["visual"]["points"][0][key] is None
     # N-10: outliers=exclude on a tiny series — empty/short result, no exception
-    empty_rel = interpret(dataset, config_from_dict(dataset, {"method": "relationship", "outliers": "exclude"}), [])
+    empty_rel = interpret(
+        dataset, config_from_dict(dataset, {"method": "relationship", "outliers": "exclude"}), []
+    )
     assert empty_rel.get("empty") is True or empty_rel["visual"]
 
     from dataforge_backend.application import slack as slack_app

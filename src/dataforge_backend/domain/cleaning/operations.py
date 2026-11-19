@@ -520,7 +520,9 @@ def parse_dates(frame: pd.DataFrame, params: dict[str, Any], ctx: CleaningContex
     for column in columns:
         # A Python list, so a failed parse stays None. pandas would turn that None into NaN.
         parsed = [parse_date(v, day_first=day_first) for v in frame[column].tolist()]
-        lost = sum(d is None and not is_sentinel(v) for d, v in zip(parsed, frame[column].tolist(), strict=True))
+        lost = sum(
+            d is None and not is_sentinel(v) for d, v in zip(parsed, frame[column].tolist(), strict=True)
+        )
         if lost:
             unreadable.append(f"{lost} in {column}")
         out[column] = _as_object([None if d is None else d.isoformat() for d in parsed], frame.index)
@@ -541,12 +543,12 @@ def parse_numbers(frame: pd.DataFrame, params: dict[str, Any], ctx: CleaningCont
     unreadable: list[str] = []
     for column in columns:
         parsed = [parse_number(v) for v in frame[column].tolist()]
-        lost = sum(n is None and not is_sentinel(v) for n, v in zip(parsed, frame[column].tolist(), strict=True))
+        lost = sum(
+            n is None and not is_sentinel(v) for n, v in zip(parsed, frame[column].tolist(), strict=True)
+        )
         if lost:
             unreadable.append(f"{lost} in {column}")
-        out[column] = _as_object(
-            [None if n is None else round(n, decimals) for n in parsed], frame.index
-        )
+        out[column] = _as_object([None if n is None else round(n, decimals) for n in parsed], frame.index)
     note = f" Could not read {', '.join(unreadable)}." if unreadable else ""
     return _outcome(
         frame,
@@ -587,9 +589,7 @@ def normalize_phones(frame: pd.DataFrame, params: dict[str, Any], ctx: CleaningC
     code = str(params.get("country_code", "27"))
     out = frame.copy()
     for column in columns:
-        out[column] = _as_object(
-            [normalise_za_phone(v, code) for v in frame[column].tolist()], frame.index
-        )
+        out[column] = _as_object([normalise_za_phone(v, code) for v in frame[column].tolist()], frame.index)
     return _outcome(frame, out, columns, f"Wrote {', '.join(columns)} in E.164 form (+{code}…).")
 
 

@@ -61,9 +61,7 @@ def render_prometheus() -> str:
     ]
     with _lock:
         for (method, route), count in sorted(_requests_total.items()):
-            lines.append(
-                f'dataforge_http_requests_total{{method="{method}",path="{route}"}} {count}'
-            )
+            lines.append(f'dataforge_http_requests_total{{method="{method}",path="{route}"}} {count}')
         lines.extend(
             [
                 "# HELP dataforge_http_5xx_total HTTP responses with status >= 500.",

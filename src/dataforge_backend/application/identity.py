@@ -34,6 +34,7 @@ def _bump_session(user: User) -> None:
     """Invalidate every outstanding access JWT for this member."""
     user.session_version = int(user.session_version or 0) + 1
 
+
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 # Hash of a random value, so a sign-in for an unknown email costs the same time as a real check.
 _DUMMY_HASH = hash_password(new_opaque_token())
@@ -257,7 +258,12 @@ async def login(
         "Password only (MFA not set up)",
     )
     await session.commit()
-    return {"mfaRequired": False, "mfaEnrollmentRequired": False, **tokens, "user": await public_user(session, user)}
+    return {
+        "mfaRequired": False,
+        "mfaEnrollmentRequired": False,
+        **tokens,
+        "user": await public_user(session, user),
+    }
 
 
 async def complete_mfa(
@@ -286,7 +292,9 @@ async def complete_mfa(
     user.failed_logins = 0
     if enrolling:
         user.mfa_enabled = True
-        await audit.record(session, actor, "Turned on MFA", "user", user.id, user.email, "Required for administrator")
+        await audit.record(
+            session, actor, "Turned on MFA", "user", user.id, user.email, "Required for administrator"
+        )
     tokens = await _issue_session(session, user, ip, user_agent)
     await audit.record(
         session,

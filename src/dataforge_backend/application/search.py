@@ -37,7 +37,10 @@ async def search(session: AsyncSession, actor: Actor, query: str, limit: int = 2
     rows = await session.execute(
         select(Dataset, func.ts_rank(dataset_vector, ts_query).label("rank"))
         .where(
-            or_(dataset_vector.op("@@", return_type=Boolean)(ts_query), Dataset.name.ilike(prefix, escape="\\")),
+            or_(
+                dataset_vector.op("@@", return_type=Boolean)(ts_query),
+                Dataset.name.ilike(prefix, escape="\\"),
+            ),
             Dataset.erased_at.is_(None),
         )
         .order_by(literal_column("rank").desc())
@@ -68,7 +71,10 @@ async def search(session: AsyncSession, actor: Actor, query: str, limit: int = 2
     rows = await session.execute(
         select(MetricDefinition, func.ts_rank(metric_vector, ts_query).label("rank"))
         .where(
-            or_(metric_vector.op("@@", return_type=Boolean)(ts_query), MetricDefinition.name.ilike(prefix, escape="\\"))
+            or_(
+                metric_vector.op("@@", return_type=Boolean)(ts_query),
+                MetricDefinition.name.ilike(prefix, escape="\\"),
+            )
         )
         .limit(limit)
     )
@@ -90,7 +96,12 @@ async def search(session: AsyncSession, actor: Actor, query: str, limit: int = 2
     dashboard_vector = _vector(Dashboard.name, Dashboard.description)
     rows = await session.execute(
         select(Dashboard, func.ts_rank(dashboard_vector, ts_query).label("rank"))
-        .where(or_(dashboard_vector.op("@@", return_type=Boolean)(ts_query), Dashboard.name.ilike(prefix, escape="\\")))
+        .where(
+            or_(
+                dashboard_vector.op("@@", return_type=Boolean)(ts_query),
+                Dashboard.name.ilike(prefix, escape="\\"),
+            )
+        )
         .limit(limit)
     )
     for dashboard, rank in rows:
@@ -107,7 +118,9 @@ async def search(session: AsyncSession, actor: Actor, query: str, limit: int = 2
             )
 
     visible_notebooks = {n["id"] for n in await workbench.list_notebooks(session, actor)}
-    notebook_rows = await session.execute(select(Notebook).where(Notebook.name.ilike(prefix, escape="\\")).limit(limit))
+    notebook_rows = await session.execute(
+        select(Notebook).where(Notebook.name.ilike(prefix, escape="\\")).limit(limit)
+    )
     for notebook in notebook_rows.scalars():
         if notebook.id in visible_notebooks:
             results.append(

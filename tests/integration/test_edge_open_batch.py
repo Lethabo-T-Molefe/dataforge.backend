@@ -2,9 +2,8 @@
 
 import io
 
-from httpx import AsyncClient
-
 from catalogue_progress import marks
+from httpx import AsyncClient
 
 from .conftest import SignIn
 
@@ -48,12 +47,8 @@ async def test_connector_access_and_schedule(client: AsyncClient, sign_in: SignI
             json={"table": "fees", "name": "Exec"},
         )
     ).status_code == 403
-    assert (
-        await client.post(f"/api/v1/connectors/{cid}/sync", headers=other)
-    ).status_code == 403
-    assert (
-        await client.post(f"/api/v1/connectors/{cid}/sync", headers=analyst)
-    ).status_code in (403, 422)
+    assert (await client.post(f"/api/v1/connectors/{cid}/sync", headers=other)).status_code == 403
+    assert (await client.post(f"/api/v1/connectors/{cid}/sync", headers=analyst)).status_code in (403, 422)
 
     sheet = await client.post(
         "/api/v1/connectors", headers=analyst, json={"name": "Sheet sched", "kind": "spreadsheet"}
@@ -126,25 +121,17 @@ async def test_monitor_and_alert_edges(client: AsyncClient, sign_in: SignIn) -> 
     )
     assert created.status_code == 201, created.text
     mid = created.json()["id"]
-    assert (await client.post(f"/api/v1/monitors/missing-monitor/check", headers=analyst)).status_code == 404
-    bad_status = await client.patch(
-        f"/api/v1/monitors/{mid}", headers=analyst, json={"status": "archived"}
-    )
+    assert (await client.post("/api/v1/monitors/missing-monitor/check", headers=analyst)).status_code == 404
+    bad_status = await client.patch(f"/api/v1/monitors/{mid}", headers=analyst, json={"status": "archived"})
     assert bad_status.status_code == 422
-    paused = await client.patch(
-        f"/api/v1/monitors/{mid}", headers=analyst, json={"status": "paused"}
-    )
+    paused = await client.patch(f"/api/v1/monitors/{mid}", headers=analyst, json={"status": "paused"})
     assert paused.status_code == 200
     assert (await client.post("/api/v1/alerts/missing-alert/acknowledge", headers=analyst)).status_code == 404
     alerts = (await client.get("/api/v1/alerts", headers=analyst)).json()
     if alerts:
-        first = await client.post(
-            f"/api/v1/alerts/{alerts[0]['id']}/acknowledge", headers=analyst
-        )
+        first = await client.post(f"/api/v1/alerts/{alerts[0]['id']}/acknowledge", headers=analyst)
         assert first.status_code == 200
-        again = await client.post(
-            f"/api/v1/alerts/{alerts[0]['id']}/acknowledge", headers=analyst
-        )
+        again = await client.post(f"/api/v1/alerts/{alerts[0]['id']}/acknowledge", headers=analyst)
         assert again.status_code == 200
 
 
@@ -195,7 +182,7 @@ async def test_prediction_publish_score_export(client: AsyncClient, sign_in: Sig
         await client.get(f"/api/v1/predictions/{pid}/export?format=csv", headers=analyst)
     ).status_code == 422
     assert (
-        await client.get(f"/api/v1/predictions/missing-pred/export?format=pdf", headers=analyst)
+        await client.get("/api/v1/predictions/missing-pred/export?format=pdf", headers=analyst)
     ).status_code == 404
 
 
@@ -212,9 +199,11 @@ async def test_governance_recipe_dashboard_stories(client: AsyncClient, sign_in:
         data={"name": "Notes tip", "classification": "internal-general", "visibility": "organisation"},
     )
     assert pii.status_code == 201, pii.text
-    assert pii.json().get("classification") in ("restricted-pii", "Restricted · PII", "restricted") or "pii" in str(
-        pii.json().get("classification", "")
-    ).lower() or pii.json().get("piiColumns")
+    assert (
+        pii.json().get("classification") in ("restricted-pii", "Restricted · PII", "restricted")
+        or "pii" in str(pii.json().get("classification", "")).lower()
+        or pii.json().get("piiColumns")
+    )
 
     upload = await client.post(
         "/api/v1/datasets",
@@ -277,9 +266,7 @@ async def test_governance_recipe_dashboard_stories(client: AsyncClient, sign_in:
     applied = next((r for r in recipes if r.get("status") == "applied"), None)
     if draft:
         assert (
-            await client.post(
-                f"/api/v1/cleaning/{dataset_id}/recipes/{draft['id']}/rerun", headers=analyst
-            )
+            await client.post(f"/api/v1/cleaning/{dataset_id}/recipes/{draft['id']}/rerun", headers=analyst)
         ).status_code == 404
     assert (
         await client.post(
@@ -305,9 +292,7 @@ async def test_governance_recipe_dashboard_stories(client: AsyncClient, sign_in:
     )
     assert share.status_code == 200, share.text
     assert (await client.get(f"/api/v1/datasets/{priv_id}", headers=other)).status_code == 200
-    unshare = await client.delete(
-        f"/api/v1/datasets/{priv_id}/shares/{me_other['id']}", headers=analyst
-    )
+    unshare = await client.delete(f"/api/v1/datasets/{priv_id}/shares/{me_other['id']}", headers=analyst)
     assert unshare.status_code == 204
     assert (await client.get(f"/api/v1/datasets/{priv_id}", headers=other)).status_code == 404
 

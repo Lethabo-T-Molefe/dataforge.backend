@@ -6,8 +6,8 @@ from typing import Any
 
 import pandas as pd
 import pytest
-
 from catalogue_progress import marks
+
 from dataforge_backend.domain.analysis import (
     MONTH_DIMENSION,
     AnalysisDataset,
@@ -95,15 +95,33 @@ def _rows(facts: pd.DataFrame, dataset: AnalysisDataset, config: Any) -> list[di
 
 
 @marks(
-    "AN-04", "AN-05", "AN-06", "AN-09", "AN-10", "AN-11", "AN-12", "AN-13",
-    "AN-15", "AN-17", "AN-18", "AN-19", "AN-21", "AN-22", "AN-23", "AN-24", "AN-25",
-    "SQ-04", "SQ-07", "SM-03",
+    "AN-04",
+    "AN-05",
+    "AN-06",
+    "AN-09",
+    "AN-10",
+    "AN-11",
+    "AN-12",
+    "AN-13",
+    "AN-15",
+    "AN-17",
+    "AN-18",
+    "AN-19",
+    "AN-21",
+    "AN-22",
+    "AN-23",
+    "AN-24",
+    "AN-25",
+    "SQ-04",
+    "SQ-07",
+    "SM-03",
 )
 def test_an_readings_on_demo_facts(facts: pd.DataFrame, dataset: AnalysisDataset) -> None:
     assert "completion_rate" in dataset.measures and dataset.measures["completion_rate"].governed
 
     rate = config_from_dict(
-        dataset, {"method": "compare", "measure": "completion_rate", "dimension": "region", "display": "share"}
+        dataset,
+        {"method": "compare", "measure": "completion_rate", "dimension": "region", "display": "share"},
     )
     rate_result = interpret(dataset, rate, _rows(facts, dataset, rate))
     assert any("shares of a total" in n.lower() for n in rate_result.get("notes", []))
@@ -117,7 +135,14 @@ def test_an_readings_on_demo_facts(facts: pd.DataFrame, dataset: AnalysisDataset
     assert labels == sorted(labels, key=str.casefold)
 
     mom = config_from_dict(
-        dataset, {"method": "trend", "measure": "enrolments", "change": "mom", "date_from": "2025-10", "date_to": "2026-03"}
+        dataset,
+        {
+            "method": "trend",
+            "measure": "enrolments",
+            "change": "mom",
+            "date_from": "2025-10",
+            "date_to": "2026-03",
+        },
     )
     mom_result = interpret(dataset, mom, _rows(facts, dataset, mom))
     points = mom_result["visual"]["points"]
@@ -126,7 +151,13 @@ def test_an_readings_on_demo_facts(facts: pd.DataFrame, dataset: AnalysisDataset
 
     cum = config_from_dict(
         dataset,
-        {"method": "trend", "measure": "enrolments", "change": "cumulative", "date_from": "2025-10", "date_to": "2026-03"},
+        {
+            "method": "trend",
+            "measure": "enrolments",
+            "change": "cumulative",
+            "date_from": "2025-10",
+            "date_to": "2026-03",
+        },
     )
     cum_result = interpret(dataset, cum, _rows(facts, dataset, cum))
     key = next(k for k in cum_result["visual"]["points"][0] if k != "name")
@@ -167,7 +198,11 @@ def test_an_readings_on_demo_facts(facts: pd.DataFrame, dataset: AnalysisDataset
     assert "not proof" in rel_result["reading"].lower() or any(
         "not proof" in n.lower() for n in rel_result.get("notes", [])
     )
-    assert "straight line" in rel_result["reading"].lower() or "r =" in rel_result["reading"].lower() or rel_result["figures"]
+    assert (
+        "straight line" in rel_result["reading"].lower()
+        or "r =" in rel_result["reading"].lower()
+        or rel_result["figures"]
+    )
 
     with pytest.raises(AnalysisError):
         config_from_dict(dataset, {"method": "explain", "measure": "completion_rate"})
@@ -203,7 +238,9 @@ def test_an_readings_on_demo_facts(facts: pd.DataFrame, dataset: AnalysisDataset
     blob = str(scope)
     assert "2026-03" in blob or "March" in blob or scope.get("empty")
 
-    count_m = type("M", (), {"kind": "ratio", "column": None, "denominator": "*", "numerator": "completions"})()
+    count_m = type(
+        "M", (), {"kind": "ratio", "column": None, "denominator": "*", "numerator": "completions"}
+    )()
     assert "COUNT(*)" in measure_sql(count_m, "pooled")  # type: ignore[arg-type]
     assert "AVG(" in measure_sql(count_m, "average")  # type: ignore[arg-type]
     assert literal("O'Brien") == "'O''Brien'"
@@ -211,9 +248,14 @@ def test_an_readings_on_demo_facts(facts: pd.DataFrame, dataset: AnalysisDataset
         dataset,
         config_from_dict(dataset, {"method": "compare", "measure": "enrolments", "region": REGIONS[0]}),
     )
-    assert REGIONS[0] in sql or ":" in plan(
-        dataset, config_from_dict(dataset, {"method": "compare", "measure": "enrolments", "region": REGIONS[0]})
-    ).sql
+    assert (
+        REGIONS[0] in sql
+        or ":"
+        in plan(
+            dataset,
+            config_from_dict(dataset, {"method": "compare", "measure": "enrolments", "region": REGIONS[0]}),
+        ).sql
+    )
 
 
 @marks("AN-07")

@@ -1,10 +1,10 @@
 import re
 
 import pyotp
+from catalogue_progress import marks
 from httpx import AsyncClient
 from sqlalchemy import text
 
-from catalogue_progress import marks
 from dataforge_backend.core.database import SessionLocal
 from dataforge_backend.infrastructure import email
 
@@ -75,9 +75,7 @@ async def test_admin_must_enrol_mfa_before_session(client: AsyncClient) -> None:
         )
         await session.commit()
     challenge = (
-        await client.post(
-            "/api/v1/auth/login", json={"email": "admin-mfa@example.com", "password": PASSWORD}
-        )
+        await client.post("/api/v1/auth/login", json={"email": "admin-mfa@example.com", "password": PASSWORD})
     ).json()
     assert challenge.get("mfaEnrollmentRequired") is True
     assert "accessToken" not in challenge
@@ -89,9 +87,7 @@ async def test_admin_must_enrol_mfa_before_session(client: AsyncClient) -> None:
     assert bad.status_code == 401
     # Sign in again for a fresh enrollment challenge after the failed attempt.
     challenge = (
-        await client.post(
-            "/api/v1/auth/login", json={"email": "admin-mfa@example.com", "password": PASSWORD}
-        )
+        await client.post("/api/v1/auth/login", json={"email": "admin-mfa@example.com", "password": PASSWORD})
     ).json()
     totp = pyotp.TOTP(challenge["secret"])
     good = await client.post(
@@ -160,12 +156,18 @@ async def test_signing_out_ends_the_cookie_session(client: AsyncClient) -> None:
     login = await client.post("/api/v1/auth/login", json={"email": "leave@example.com", "password": PASSWORD})
     access = login.json()["accessToken"]
     token = client.cookies["df_refresh"]
-    assert (await client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {access}"})).status_code == 200
-    assert (await client.post("/api/v1/auth/logout", json={}, headers={"Authorization": f"Bearer {access}"})).status_code == 204
+    assert (
+        await client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {access}"})
+    ).status_code == 200
+    assert (
+        await client.post("/api/v1/auth/logout", json={}, headers={"Authorization": f"Bearer {access}"})
+    ).status_code == 204
     assert "df_refresh" not in client.cookies
     assert (await client.post("/api/v1/auth/refresh", json={"refreshToken": token})).status_code == 401
     # The access JWT must stop working immediately — not only after it expires.
-    assert (await client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {access}"})).status_code == 401
+    assert (
+        await client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {access}"})
+    ).status_code == 401
 
 
 @marks("A-01", "G-01")
@@ -212,7 +214,9 @@ async def test_audit_log_cannot_be_altered(client: AsyncClient, sign_in: SignIn)
 
 
 @marks("I-15")
-async def test_resend_stays_silent_for_unknown_verified_and_disabled(client: AsyncClient, sign_in: SignIn) -> None:
+async def test_resend_stays_silent_for_unknown_verified_and_disabled(
+    client: AsyncClient, sign_in: SignIn
+) -> None:
     token = await _register(client, "still-open@example.com")
     assert (await client.post("/api/v1/auth/verify-email", json={"token": token})).status_code == 200
     await _register(client, "held@example.com")
