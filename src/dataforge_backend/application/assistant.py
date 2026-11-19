@@ -258,6 +258,8 @@ def turn_dict(q: AssistantQuery) -> dict[str, Any]:
     out["trace"] = q.trace or []
     if q.chart:
         out["chart"] = q.chart
+    if q.refused:
+        out["refusalReason"] = q.refusal_reason
     return out
 
 

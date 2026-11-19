@@ -8,6 +8,7 @@ dataforge refresh-connectors      refresh connectors whose schedule is due, once
 dataforge superset-sync           register approved datasets, metrics and row policies in Superset
 dataforge scan-anomalies          run the anomaly scan over governed metrics once
 dataforge backtest-anomalies      compare the anomaly detector with the band rule; report in evals/anomaly/
+dataforge eval-assistant          run the assistant evaluation (test/eval databases only); report in evals/assistant/
 dataforge serve                   run the API
 """
 
@@ -257,6 +258,66 @@ def backtest_anomalies(synthetic: int = 200, out: Path | None = None) -> None:
     path = evals.write("anomaly", "backtest", data, markdown, out)
     typer.echo(markdown)
     typer.echo(f"Written to {path}.json and {path}.md")
+
+
+@app.command("eval-assistant")
+def eval_assistant(
+    planner: str = typer.Option("rules", help="rules, or llm (needs a model key)"),
+    questions: Path | None = None,
+    repeat: int = 1,
+    fresh_db: bool = typer.Option(
+        False, help="Rebuild and seed the database first (test or eval databases only)"
+    ),
+    out: Path | None = None,
+) -> None:
+    """Run the assistant evaluation and write the report to evals/assistant/.
+
+    Only runs against a database whose name contains "test" or "eval": the evaluation member's questions,
+    quotas and audit entries do not belong in a shared or hosted database.
+    """
+    if settings.ENVIRONMENT == "production":
+        raise typer.BadParameter("The evaluation never runs in production.")
+
+    async def go() -> tuple[dict[str, Any], list[Any], str]:
+        from .application import evaluation as runner
+        from .core.database import SessionLocal, engine
+        from .devtools import is_disposable, reset_database
+        from .domain import evaluation
+        from .infrastructure.workers import pool
+        from .seed import seed_demo as seed
+
+        if not is_disposable(engine.url):
+            raise typer.BadParameter(
+                f"{engine.url.database!r} is not a test or eval database. Point DATABASE_URL at one."
+            )
+        path = questions or runner.DEFAULT_QUESTIONS
+        try:
+            if fresh_db:
+                await reset_database(engine)
+                async with SessionLocal() as session:
+                    await seed(session)
+            async with SessionLocal() as session:
+                summary, results = await runner.run(session, evaluation.load_questions(path), planner, repeat)
+        finally:
+            pool.shutdown()
+            await engine.dispose()
+        return summary, results, str(path)
+
+    from . import evals
+    from .domain import evaluation
+
+    summary, results, path = _run(go())
+    provenance = evals.provenance(
+        f"dataforge eval-assistant --planner {planner} --repeat {repeat}",
+        planner=planner,
+        questions=Path(path).name,
+        repeat=repeat,
+    )
+    data = {"provenance": provenance, "summary": summary, "results": [r.to_dict() for r in results]}
+    markdown = evaluation.render_markdown(summary, results, provenance)
+    written = evals.write("assistant", planner, data, markdown, out)
+    typer.echo(markdown)
+    typer.echo(f"Written to {written}.json and {written}.md")
 
 
 @app.command()

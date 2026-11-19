@@ -59,10 +59,14 @@ jobs:
           exit $status
 
       - name: Tests
+        env:
+          # Tests that produce a report (the assistant evaluation) write it here; it is shown as a notice.
+          CI_NOTICES: ci-notices.txt
         run: |
           set +e
           uv run pytest -q --junitxml=report.xml
           status=$?
+          uv run python scripts/ci_annotate.py notices ci-notices.txt
           uv run python scripts/ci_annotate.py junit report.xml
           exit $status
 

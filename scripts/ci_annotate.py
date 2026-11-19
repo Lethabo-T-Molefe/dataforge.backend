@@ -5,6 +5,7 @@ diagnosed without opening the job log.
 
     python scripts/ci_annotate.py junit report.xml
     python scripts/ci_annotate.py mypy mypy.txt
+    python scripts/ci_annotate.py notices ci-notices.txt   (reports written by tests, as notices)
 """
 
 from __future__ import annotations
@@ -28,14 +29,33 @@ def _escape_property(text: str) -> str:
     return _escape(text).replace(":", "%3A").replace(",", "%2C")
 
 
-def _annotate(message: str, *, title: str, file: str | None = None, line: int | None = None) -> None:
+def _annotate(
+    message: str,
+    *,
+    title: str,
+    file: str | None = None,
+    line: int | None = None,
+    level: str = "error",
+    limit: int = MAX_CHARS,
+) -> None:
     props = []
     if file:
         props.append(f"file={_escape_property(file)}")
         if line:
             props.append(f"line={line}")
     props.append(f"title={_escape_property(title)}")
-    print(f"::error {','.join(props)}::{_escape(message[:MAX_CHARS])}")
+    print(f"::{level} {','.join(props)}::{_escape(message[:limit])}")
+
+
+def notices(path: Path) -> int:
+    """Each block a test wrote (separated by a ===== line) becomes one notice; never fails the step."""
+    if not path.exists():
+        return 0
+    blocks = [b.strip() for b in path.read_text(encoding="utf-8").split("\n=====\n") if b.strip()]
+    for block in blocks[:MAX_DETAILED]:
+        title = block.splitlines()[0].lstrip("# ").strip() or "Report"
+        _annotate(block, title=title[:120], level="notice", limit=60_000)
+    return 0
 
 
 def junit(path: Path) -> int:
@@ -74,11 +94,11 @@ def mypy(path: Path) -> int:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 3 or argv[1] not in {"junit", "mypy"}:
+    if len(argv) != 3 or argv[1] not in {"junit", "mypy", "notices"}:
         print(__doc__)
         return 2
     path = Path(argv[2])
-    return junit(path) if argv[1] == "junit" else mypy(path)
+    return {"junit": junit, "mypy": mypy, "notices": notices}[argv[1]](path)
 
 
 if __name__ == "__main__":
