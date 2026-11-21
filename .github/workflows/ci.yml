@@ -1,13 +1,14 @@
-name: CI
+name: CI/CD
 
 on:
   push:
     branches: [main, "final-year/**"]
   pull_request:
 
+# A newer push cancels an older run on other branches; on main, runs queue so a deploy is never cut off.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   checks:
@@ -78,3 +79,65 @@ jobs:
       - uses: actions/checkout@v4
       - name: API image
         run: docker build -t dataforge-api .
+
+  # CD: after every check passes on a push to main, the EC2 host deploys that commit.
+  # GitHub signs in to AWS with OIDC (no stored keys) as a role that may only send commands to this instance,
+  # and Systems Manager runs ops/ec2/deploy.sh there, which rolls back if the new version is unhealthy.
+  deploy:
+    name: Deploy to EC2
+    needs: [checks, image]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: deploy-ec2
+      cancel-in-progress: false
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_REGION: af-south-1
+      AWS_ROLE_ARN: arn:aws:iam::134506021502:role/dataforge-github-deploy
+      EC2_INSTANCE_ID: i-046e0963d5e4e42b8
+      API_URL: https://13-244-116-179.sslip.io
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy over Systems Manager
+        run: |
+          set -euo pipefail
+          id=$(aws ssm send-command \
+            --instance-ids "$EC2_INSTANCE_ID" \
+            --document-name AWS-RunShellScript \
+            --comment "Deploy ${GITHUB_SHA::7}" \
+            --timeout-seconds 900 \
+            --parameters "commands=[\"/opt/dataforge/deploy.sh $GITHUB_SHA\"]" \
+            --query Command.CommandId --output text)
+          echo "SSM command $id"
+          status=Pending
+          for _ in $(seq 1 180); do
+            sleep 5
+            status=$(aws ssm get-command-invocation --command-id "$id" --instance-id "$EC2_INSTANCE_ID" \
+              --query Status --output text 2>/dev/null || echo Pending)
+            case "$status" in Pending|InProgress|Delayed) ;; *) break ;; esac
+          done
+          aws ssm get-command-invocation --command-id "$id" --instance-id "$EC2_INSTANCE_ID" \
+            --query '[StandardOutputContent, StandardErrorContent]' --output text || true
+          echo "Status: $status"
+          [ "$status" = Success ]
+
+      - name: Public health check
+        run: |
+          for _ in $(seq 1 12); do
+            if body=$(curl -fsS -m 10 "$API_URL/api/v1/health"); then
+              echo "$body"
+              echo "Live at $API_URL" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::$API_URL/api/v1/health did not answer"
+          exit 1
