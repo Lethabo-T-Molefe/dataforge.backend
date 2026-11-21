@@ -6,6 +6,7 @@ from typing import Any
 import pandas as pd
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from ..core.config import settings
 from ..core.errors import Conflict, Forbidden, NotFound, ValidationFailed
@@ -132,8 +133,14 @@ async def get_visible(session: AsyncSession, actor: Actor, dataset_id: str) -> D
 
 async def list_datasets(session: AsyncSession, actor: Actor) -> list[dict[str, Any]]:
     datasets = await catalogue.visible_datasets(session, actor)
-    for d in datasets:
-        await session.refresh(d, ["insights"])
+    if datasets:
+        # Fresh insights for every dataset in one query, instead of a refresh (two queries) per dataset.
+        await session.execute(
+            select(Dataset)
+            .where(Dataset.id.in_([d.id for d in datasets]))
+            .options(selectinload(Dataset.insights))
+            .execution_options(populate_existing=True)
+        )
     return [summary(d, actor) for d in datasets]
 
 

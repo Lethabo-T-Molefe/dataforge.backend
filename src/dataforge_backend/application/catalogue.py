@@ -117,13 +117,21 @@ async def policy_for(session: AsyncSession, dataset_id: str, role: str) -> str |
     return row.scalar_one_or_none()
 
 
-async def grants_for(session: AsyncSession, actor: Actor) -> dict[str, TableGrant]:
+async def policies_for_role(session: AsyncSession, role: str) -> dict[str, str]:
+    """Every row policy for a role, by dataset id, in one query."""
+    return {
+        p.dataset_id: p.predicate
+        for p in (await session.execute(select(RowPolicy).where(RowPolicy.role == role))).scalars()
+    }
+
+
+async def grants_for(
+    session: AsyncSession, actor: Actor, *, policies: dict[str, str] | None = None
+) -> dict[str, TableGrant]:
     """The tables a member's SQL may read, with masked columns blocked and their row policy attached."""
     datasets = await queryable_datasets(session, actor)
-    policies = {
-        p.dataset_id: p.predicate
-        for p in (await session.execute(select(RowPolicy).where(RowPolicy.role == actor.role))).scalars()
-    }
+    if policies is None:
+        policies = await policies_for_role(session, actor.role)
     grants: dict[str, TableGrant] = {}
     for dataset in datasets:
         table = dataset.qualified_table()

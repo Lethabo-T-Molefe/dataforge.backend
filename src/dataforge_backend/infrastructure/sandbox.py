@@ -18,12 +18,21 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from ..core.config import settings
 from ..core.errors import Refused, Unavailable
 from ..core.security import utcnow
-from ..domain.analysis.sql import ident
 from .db.models import SandboxSession, new_id
 from .warehouse import jsonable
 from .workers import pool as workers
 
 T = TypeVar("T")
+
+# The same as SET TRANSACTION READ ONLY, SET LOCAL ROLE, SET LOCAL statement_timeout, ... in one statement.
+_CAPS = text(
+    "SELECT set_config('transaction_read_only', 'on', true),"
+    " set_config('role', :role, true),"
+    " set_config('statement_timeout', :timeout, true),"
+    " set_config('idle_in_transaction_session_timeout', '60000', true),"
+    " set_config('search_path', 'gold, silver', true),"
+    " set_config('work_mem', '32MB', true)"
+)
 
 
 @dataclass
@@ -87,12 +96,11 @@ class Sandbox:
         try:
             async with self.engine.connect() as conn:
                 async with conn.begin():
-                    await conn.execute(text("SET TRANSACTION READ ONLY"))
-                    await conn.execute(text(f"SET LOCAL ROLE {ident(settings.SANDBOX_ROLE)}"))
-                    await conn.execute(text(f"SET LOCAL statement_timeout = {int(timeout_ms)}"))
-                    await conn.execute(text("SET LOCAL idle_in_transaction_session_timeout = 60000"))
-                    await conn.execute(text("SET LOCAL search_path TO gold, silver"))
-                    await conn.execute(text("SET LOCAL work_mem = '32MB'"))
+                    # One round trip for all the caps (each is SET LOCAL: it ends with the transaction).
+                    # This matters when the database is far away: every statement costs a network round trip.
+                    await conn.execute(
+                        _CAPS, {"role": settings.SANDBOX_ROLE, "timeout": str(int(timeout_ms))}
+                    )
                     result = await conn.stream(text(sql), params or {})
                     columns = list(result.keys())
                     fetched = await result.fetchmany(max_rows + 1)

@@ -1,5 +1,6 @@
 """The semantic layer's shared metrics: define, publish, find where they are used, and headline figures."""
 
+import asyncio
 from typing import Any
 
 from sqlalchemy import func, select
@@ -7,12 +8,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.errors import Conflict, Forbidden, NotFound, ValidationFailed
 from ..core.security import utcnow
-from ..domain.analysis import AnalysisError, config_from_dict
+from ..domain.analysis import AnalysisDataset, AnalysisError, BuildConfig, MeasureDef, config_from_dict
 from ..domain.analysis.format import format_delta, format_percent, format_value
 from ..domain.roles import Permission
 from ..domain.semantic import MetricError, MetricSpec, expression_for, validate_metric
+from ..domain.sql_guard import TableGrant
 from ..infrastructure.db.models import DashboardChart, MetricDefinition, ModelVersion, Monitor
-from . import analysis, audit, catalogue, integrations
+from . import analysis, audit, catalogue, integrations, quotas
 from .common import Actor, slugify
 
 GRAIN_DEFAULT = "dataset rows"
@@ -224,20 +226,20 @@ async def delete(session: AsyncSession, actor: Actor, metric_id: str) -> None:
 
 
 async def summaries(session: AsyncSession, actor: Actor, limit: int = 4) -> list[dict[str, Any]]:
-    """Headline figures: the latest month of each shared metric against the month before."""
+    """Headline figures: the latest month of each shared metric against the month before.
+
+    The sandbox queries for the next few candidates run at once, and grants and row policies are read once,
+    because each query is a network round trip to the database. Candidates are still taken in order, so the
+    figures are the same as running them one by one.
+    """
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
-    definitions = {
-        m.key: m
-        for m in (
-            await session.execute(select(MetricDefinition).where(MetricDefinition.status == "published"))
-        ).scalars()
-    }
+    candidates: list[tuple[AnalysisDataset, MeasureDef, BuildConfig]] = []
     for dataset in await catalogue.analysis_catalogue(session, actor):
         if not dataset.has_time or len(dataset.months) < 2:
             continue
         for measure in dataset.measures.values():
-            if not measure.governed or measure.id in seen or len(out) >= limit:
+            if not measure.governed:
                 continue
             try:
                 config = config_from_dict(
@@ -249,7 +251,61 @@ async def summaries(session: AsyncSession, actor: Actor, limit: int = 4) -> list
                         "to": dataset.months[-1],
                     },
                 )
-                result = await analysis.execute(session, actor, dataset, config, kind="analysis")
+            except AnalysisError:
+                continue
+            candidates.append((dataset, measure, config))
+    if not candidates:
+        await session.commit()
+        return out
+
+    policies = await catalogue.policies_for_role(session, actor.role)
+    grants: dict[str, TableGrant] | None = None
+    definitions: dict[str, MetricDefinition] = {}
+    compute_ms: int | None = None
+    queue = list(candidates)
+    while queue and len(out) < limit:
+        batch: list[tuple[AnalysisDataset, MeasureDef, BuildConfig]] = []
+        later: list[tuple[AnalysisDataset, MeasureDef, BuildConfig]] = []
+        while queue and len(batch) < limit - len(out):
+            candidate = queue.pop(0)
+            if candidate[1].id in seen:
+                continue
+            if any(candidate[1].id == b[1].id for b in batch):
+                later.append(candidate)  # used only if the one already in this batch gives no figure
+            else:
+                batch.append(candidate)
+        queue = later + queue
+        if not batch:
+            break
+        runs = asyncio.gather(
+            *(analysis.run_sandboxed(actor, d, c, policies.get(d.id), kind="analysis") for d, _m, c in batch),
+            return_exceptions=True,
+        )
+        # The sandbox uses its own connections, so the session reads what is left while the queries run.
+        if grants is None:
+            grants = await catalogue.grants_for(session, actor, policies=policies)
+            published = select(MetricDefinition).where(MetricDefinition.status == "published")
+            definitions = {m.key: m for m in (await session.execute(published)).scalars()}
+        results = await runs
+        for (dataset, measure, config), run in zip(batch, results, strict=True):
+            if len(out) >= limit or measure.id in seen:
+                continue
+            if isinstance(run, AnalysisError):
+                continue
+            if isinstance(run, BaseException):
+                raise run
+            compute_ms = (compute_ms or 0) + run.duration_ms  # counted as before: once the sandbox ran
+            try:
+                result = await analysis.finish(
+                    session,
+                    actor,
+                    dataset,
+                    config,
+                    policies.get(dataset.id),
+                    run,
+                    grants,
+                    count_compute=False,
+                )
             except AnalysisError:
                 continue
             values = [p.get(measure.label) for p in result["visual"]["points"]]
@@ -275,5 +331,7 @@ async def summaries(session: AsyncSession, actor: Actor, limit: int = 4) -> list
                 }
             )
             seen.add(measure.id)
+    if compute_ms is not None:
+        await quotas.add_compute(session, actor.member_id, compute_ms)
     await session.commit()
     return out
