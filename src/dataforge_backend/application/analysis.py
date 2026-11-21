@@ -21,8 +21,9 @@ from ..domain.analysis import (
 )
 from ..domain.analysis.sql import group_query
 from ..domain.roles import Permission
-from ..domain.sql_guard import QueryRefused, guard_select
+from ..domain.sql_guard import QueryRefused, TableGrant, guard_select
 from ..infrastructure.db.models import Exploration
+from ..infrastructure.sandbox import SandboxResult
 from . import audit, catalogue, quotas
 from .common import Actor, humanize
 from .runtime import sandbox
@@ -67,15 +68,42 @@ async def execute(
 ) -> dict[str, Any]:
     """Run one analysis in the sandbox under the member's row policy, then interpret it."""
     dataset_row = await catalogue.policy_for(session, dataset.id, actor.role)
-    query = plan(dataset, config, policy=dataset_row)
-    result = await sandbox.run_select(
+    result = await run_sandboxed(actor, dataset, config, dataset_row, kind=kind)
+    return await finish(session, actor, dataset, config, dataset_row, result)
+
+
+async def run_sandboxed(
+    actor: Actor, dataset: AnalysisDataset, config: BuildConfig, policy: str | None, *, kind: str
+) -> SandboxResult:
+    """The sandbox part of an analysis. It uses no session, so several can run at once."""
+    query = plan(dataset, config, policy=policy)
+    return await sandbox.run_select(
         query.sql, user_id=actor.member_id, kind=kind, params=query.params, max_rows=20_000
     )
-    await quotas.add_compute(session, actor.member_id, result.duration_ms)
+
+
+async def finish(
+    session: AsyncSession,
+    actor: Actor,
+    dataset: AnalysisDataset,
+    config: BuildConfig,
+    dataset_row: str | None,
+    result: SandboxResult,
+    grants: dict[str, TableGrant] | None = None,
+    *,
+    count_compute: bool = True,
+) -> dict[str, Any]:
+    """Count the compute and interpret a sandbox result.
+
+    When running several analyses, pass `grants`, and count their compute once with `count_compute=False`.
+    """
+    if count_compute:
+        await quotas.add_compute(session, actor.member_id, result.duration_ms)
     rows = [dict(zip(result.columns, row, strict=True)) for row in result.rows]
     output = interpret(dataset, config, rows)
     # The SQL shown is validated like any member query, so opening it in the workbench runs as-is.
-    grants = await catalogue.grants_for(session, actor)
+    if grants is None:
+        grants = await catalogue.grants_for(session, actor)
     try:
         guard_select(output["sql"], grants)
         output["sqlRunnable"] = True
