@@ -1,0 +1,40 @@
+name: Seed the hosted demo
+
+# Run by hand (Actions → Seed the hosted demo → Run workflow) after a deploy that adds demo data.
+# The seed is idempotent: existing records are left as they are, missing ones are created.
+#
+# Repository secrets it needs (Settings → Secrets and variables → Actions):
+#   LIVE_DATABASE_URL  the API's DATABASE_URL on Render
+#   LIVE_SECRETS_KEY   the API's SECRETS_KEY on Render (trained models are encrypted with it)
+#   LIVE_JWT_SECRET    the API's JWT_SECRET on Render
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type SEED to write demo data to the hosted database
+        required: true
+
+jobs:
+  seed:
+    if: ${{ github.event.inputs.confirm == 'SEED' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: ${{ secrets.LIVE_DATABASE_URL }}
+      SECRETS_KEY: ${{ secrets.LIVE_SECRETS_KEY }}
+      JWT_SECRET: ${{ secrets.LIVE_JWT_SECRET }}
+      ENVIRONMENT: development
+      DEMO_MODE: "true"
+      SUPERSET_URL: ""
+      JUPYTER_URL: ""
+      MONITOR_INTERVAL_SECONDS: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen --no-dev
+      - name: Migrate (a no-op when the API already did)
+        run: uv run dataforge migrate
+      - name: Seed
+        run: uv run dataforge seed-demo
+      - name: Scan for anomalies once
+        run: uv run dataforge scan-anomalies
